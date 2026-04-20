@@ -1,0 +1,30 @@
+# Base runtime dependencies
+torch>=2.1
+torchvision>=0.16
+opencv-python>=4.8
+scikit-image>=0.21
+Pillow>=10.0
+shapely>=2.0
+geojson>=3.0
+albumentations>=1.3
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+scikit-learn>=1.3
+pyyaml>=6.0
+omegaconf>=2.3
+tqdm>=4.65
+rich>=13.0
+matplotlib>=3.7
+seaborn>=0.12
+tensorboard>=2.14
+
+# Optional model families
+cellpose>=3.0
+segment-anything>=1.0
+huggingface-hub>=0.19
+
+# Dev tools
+pytest>=7.4
+pytest-cov>=4.1
+ruff>=0.1
