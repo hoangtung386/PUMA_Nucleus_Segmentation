@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "puma-seg"
+version = "0.1.0"
+description = "Nucleus instance segmentation and classification on the PUMA melanoma histopathology dataset using Cellpose CP4 (cpsam) or legacy models."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "PUMA Team", email = "team@example.com" }]
+
+dependencies = [
+    # Deep learning
+    "torch>=2.1",
+    "torchvision>=0.16",
+
+    # Image processing
+    "opencv-python>=4.8",
+    "scikit-image>=0.21",
+    "Pillow>=10.0",
+
+    # Geospatial / annotation parsing
+    "shapely>=2.0",
+    "geojson>=3.0",
+
+    # Data augmentation
+    "albumentations>=1.3",
+
+    # Numerical / scientific
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+
+    # Config management
+    "pyyaml>=6.0",
+    "omegaconf>=2.3",
+
+    # Logging & progress
+    "tqdm>=4.65",
+    "rich>=13.0",
+
+    # Visualisation
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+
+    # Experiment tracking (optional, can be disabled)
+    "tensorboard>=2.14",
+]
+
+[project.optional-dependencies]
+cp4 = [
+    "segment-anything>=1.0",
+    "huggingface-hub>=0.19",
+]
+cellpose = [
+    "cellpose>=3.0",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "ipykernel",
+    "jupyterlab",
+]
+
+[project.scripts]
+puma-train   = "puma_seg.cli.train:main"
+puma-eval    = "puma_seg.cli.evaluate:main"
+puma-predict = "puma_seg.cli.predict:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/puma_seg"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short --cov=src/puma_seg --cov-report=term-missing"
