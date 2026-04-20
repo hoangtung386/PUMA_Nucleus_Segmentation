@@ -1,0 +1,31 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Baseline config — fine-tune Cellpose segmentation only
+# ──────────────────────────────────────────────────────────────────────────────
+
+data:
+  raw_dir:       "data/raw"
+  processed_dir: "data/processed"
+  split_file:    "data/splits/split.json"
+  track: 1                     # 1 (3 classes) or 2 (10 classes)
+  image_size: 512              # resize ROIs for training (null → keep 1024)
+  val_split: 0.15
+  test_split: 0.10
+
+segmentation:
+  pretrained_model: "cpsam"    # CP4 (Cellpose-SAM) — recommended for best performance
+  gpu: true
+  diameter: 17.0              # expected nucleus diameter in pixels (40× scan ≈ 15-20 px)
+  nchan: 2                    # 2 = grayscale mode (Cellpose default)
+  channels: [0, 0]
+
+  # Fine-tuning hyperparameters
+  learning_rate: 1.0e-5       # keep small for fine-tuning
+  weight_decay: 0.1
+  n_epochs: 100
+  batch_size: 8
+  model_name: "puma_cellpose_baseline"
+
+paths:
+  save_dir:  "models/"
+  log_dir:   "runs/baseline"
+  output_dir: "outputs/baseline"

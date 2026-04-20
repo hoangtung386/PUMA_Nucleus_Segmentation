@@ -1,0 +1,55 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Multi-task config — Cellpose segmentation + NucleusClassifier
+# ──────────────────────────────────────────────────────────────────────────────
+
+data:
+  raw_dir:       "data/raw"
+  processed_dir: "data/processed"
+  split_file:    "data/splits/split.json"
+  track: 1                     # 1 (3 classes) or 2 (10 classes)
+  image_size: 512              # resize ROIs for training (null → keep 1024)
+  val_split: 0.15
+  test_split: 0.10
+  crop_size: 64                # nucleus crop size for classifier
+
+segmentation:
+  pretrained_model: "cyto3"
+  gpu: true
+  diameter: 17.0
+  nchan: 2
+  channels: [0, 0]
+
+  # Fine-tuning hyperparameters
+  learning_rate: 1.0e-5
+  weight_decay: 0.1
+  n_epochs: 100
+  batch_size: 8
+  model_name: "puma_cellpose_multitask"
+
+classification:
+  pretrained: true             # use ImageNet backbone
+  freeze_backbone: true        # start frozen (phase 1)
+  dropout: 0.3
+
+  # Phase 1 — frozen backbone, train head only
+  phase1_epochs: 20
+  phase1_lr: 1.0e-3
+
+  # Phase 2 — unfreeze last N backbone groups
+  phase2_epochs: 80
+  phase2_lr_head: 1.0e-4
+  phase2_lr_backbone: 1.0e-6
+  unfreeze_groups: 2           # unfreeze last 2 ResNet layer groups
+
+  weight_decay: 1.0e-4
+  label_smoothing: 0.1
+  patience: 15
+  batch_size: 64
+  use_amp: true                # mixed precision (requires CUDA)
+
+  model_name: "best_classifier"
+
+paths:
+  save_dir:   "models/"
+  log_dir:    "runs/multitask"
+  output_dir: "outputs/multitask"
