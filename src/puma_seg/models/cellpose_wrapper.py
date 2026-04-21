@@ -87,7 +87,7 @@ class CellposeSegmentor:
         """Load CPTransformer (CP4) directly."""
         from puma_seg.models.cp_transformer import load_cpsam_checkpoint
 
-        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+        dtype = torch.float32
 
         if model_path.lower() == "cpsam":
             self._cp_transformer = load_cpsam_checkpoint(
