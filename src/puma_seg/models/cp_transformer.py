@@ -144,6 +144,7 @@ class CPTransformer(nn.Module):
             output: (B, nout, H, W) segmentation output
             style: (B, 256) style features for cellpose compatibility
         """
+        x = x.to(self.dtype)
         x = self.encoder.patch_embed(x)
 
         if self.encoder.pos_embed is not None:
