@@ -21,7 +21,7 @@ Bài toán có **2 tracks**:
    - Tăng độ chính xác và nhất quán
    - Hỗ trớ bác sĩ trong chẩn đoán và điều trị
 
-### Contribution của chúng ta
+### Contribution của chúng tôi
 
 Chúng tôi cung cấp một **pipeline hoàn chỉnh** bao gồm:
 
@@ -46,34 +46,34 @@ Chúng tôi cung cấp một **pipeline hoàn chỉnh** bao gồm:
 
 ```
 PUMA_Nucleus_Segmentation/
-├── src/puma_seg/               # Package chính
+├── src/puma_seg/                  # Package chính
 │   ├── models/
-│   │   ├── cp_transformer.py   # CP4 (SAM ViT-L backbone)
-│   │   ├── cellpose_wrapper.py # Wrapper cho CP4/Cellpose
-│   │   ├── nucleus_classifier.py # ResNet-18 classifier
-│   │   ├── losses.py           # Loss functions
-│   │   └── cp4_dataset.py      # CP4 dataset & loss
+│   │   ├── cp_transformer.py      # CP4 (SAM ViT-L backbone)
+│   │   ├── cellpose_wrapper.py    # Wrapper cho CP4/Cellpose
+│   │   ├── nucleus_classifier.py  # ResNet-18 classifier
+│   │   ├── losses.py              # Loss functions
+│   │   └── cp4_dataset.py         # CP4 dataset & loss
 │   ├── data/
-│   │   ├── dataset.py         # PUMASegmentationDataset
-│   │   ├── geojson_parser.py  # Parse GeoJSON annotations
-│   │   └── transforms.py      # Albumentations augmentations
+│   │   ├── dataset.py             # PUMASegmentationDataset
+│   │   ├── geojson_parser.py      # Parse GeoJSON annotations
+│   │   └── transforms.py          # Albumentations augmentations
 │   ├── training/
-│   │   ├── trainer.py        # Training loops
-│   │   └── callbacks.py      # EarlyStopping, ModelCheckpoint
+│   │   ├── trainer.py             # Training loops
+│   │   └── callbacks.py           # EarlyStopping, ModelCheckpoint
 │   ├── evaluation/
-│   │   └── metrics.py        # PUMA metrics
-│   ├── cli/                 # CLI entry points
-│   └── utils/               # I/O & visualization
+│   │   └── metrics.py             # PUMA metrics
+│   ├── cli/                       # CLI entry points
+│   └── utils/                     # I/O & visualization
 ├── scripts/
-│   ├── prepare_data.py      # Convert GeoJSON → masks
-│   ├── train.py            # Training script
-│   ├── evaluate.py         # Evaluation script
-│   └── predict.py         # Inference script
+│   ├── prepare_data.py            # Convert GeoJSON → masks
+│   ├── train.py                   # Training script
+│   ├── evaluate.py                # Evaluation script
+│   └── predict.py                 # Inference script
 ├── configs/
-│   ├── baseline.yaml      # Segmentation only
-│   └── multitask.yaml    # Segmentation + Classification
+│   ├── baseline.yaml              # Segmentation only
+│   └── multitask.yaml             # Segmentation + Classification
 ├── notebooks/
-│   └── Train_puma_colab.ipynb  # Colab training notebook
+│   └── Train_puma_colab.ipynb     # Colab training notebook
 └── tests/
 ```
 
