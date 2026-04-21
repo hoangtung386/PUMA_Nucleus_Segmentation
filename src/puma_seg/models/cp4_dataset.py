@@ -42,6 +42,8 @@ class CP4Loss(nn.Module):
 class CP4Dataset(torch.utils.data.Dataset):
     """Dataset for CP4 fine-tuning from image/mask arrays."""
 
+    TARGET_SIZE = 256
+
     def __init__(
         self,
         images: List[np.ndarray],
@@ -54,12 +56,23 @@ class CP4Dataset(torch.utils.data.Dataset):
         self.diameter = diameter
         self.augment = augment
 
+        import cv2
+        self._resize = lambda img: cv2.resize(img, (self.TARGET_SIZE, self.TARGET_SIZE))
+        self._resize_mask = lambda mask: cv2.resize(
+            mask.astype(np.float32),
+            (self.TARGET_SIZE, self.TARGET_SIZE),
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(np.int32)
+
     def __len__(self) -> int:
         return len(self.images)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
         img = self.images[idx].astype(np.float32) / 255.0
         mask = self.labels[idx]
+
+        img = self._resize(img)
+        mask = self._resize_mask(mask)
 
         if self.augment:
             img, mask = self._augment(img, mask)
