@@ -38,8 +38,9 @@ class CP4Loss(nn.Module):
         target_h, target_w = y_flow.shape[1], y_flow.shape[2]
 
         if pred_h != target_h or pred_w != target_w:
-            pred_flow = F.interpolate(pred_flow, size=(target_h, target_w), mode="bilinear", align_corners=False)
-            pred_cellprob = F.interpolate(pred_cellprob, size=(target_h, target_w), mode="bilinear", align_corners=False)
+            y_flow = F.interpolate(y_flow.unsqueeze(1), size=(pred_h, pred_w), mode="bilinear", align_corners=False).squeeze(1)
+            x_flow = F.interpolate(x_flow.unsqueeze(1), size=(pred_h, pred_w), mode="bilinear", align_corners=False).squeeze(1)
+            cellprob = F.interpolate(cellprob.unsqueeze(1), size=(pred_h, pred_w), mode="bilinear", align_corners=False).squeeze(1)
 
         flow_target = torch.cat([y_flow.unsqueeze(1), x_flow.unsqueeze(1)], dim=1)
         flow_loss = F.l1_loss(pred_flow, flow_target, reduction="mean")
