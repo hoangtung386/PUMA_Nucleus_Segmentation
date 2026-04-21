@@ -30,6 +30,7 @@ htmlcov/
 # Ruff
 .ruff_cache/
 .github/
+.kiro/
 
 # Jupyter
 .ipynb_checkpoints/
