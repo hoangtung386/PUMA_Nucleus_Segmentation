@@ -79,10 +79,24 @@ class CPTransformer(nn.Module):
         self.encoder.patch_embed.proj = nn.Conv2d(3, nchan, stride=ps, kernel_size=ps)
         self.encoder.patch_embed.proj.weight.data = w[:, :, :: 16 // ps, :: 16 // ps]
 
-        ds = (1024 // 16) // (bsize // ps)
-        self.encoder.pos_embed = nn.Parameter(
-            self.encoder.pos_embed[:, ::ds, ::ds], requires_grad=True
-        )
+        target_h = 1024 // ps
+        target_w = 1024 // ps
+        orig_shape = self.encoder.pos_embed.shape
+        orig_h = orig_shape[1]
+        orig_w = orig_shape[2]
+
+        if target_h != orig_h or target_w != orig_w:
+            pos_embed_2d = self.encoder.pos_embed.permute(0, 3, 1, 2)
+            pos_embed_resized = F.interpolate(
+                pos_embed_2d,
+                size=(target_h, target_w),
+                mode="bilinear",
+                align_corners=False,
+            )
+            self.encoder.pos_embed = nn.Parameter(
+                pos_embed_resized.permute(0, 2, 3, 1),
+                requires_grad=True,
+            )
 
         self.nout = nout
         self.out = nn.Conv2d(256, self.nout * ps**2, kernel_size=1)
@@ -133,7 +147,20 @@ class CPTransformer(nn.Module):
         x = self.encoder.patch_embed(x)
 
         if self.encoder.pos_embed is not None:
-            x = x + self.encoder.pos_embed
+            _, h, w, c = x.shape
+            pos_embed = self.encoder.pos_embed
+
+            if pos_embed.shape[1] != h or pos_embed.shape[2] != w:
+                pos_embed_3d = pos_embed.permute(0, 3, 1, 2)
+                pos_embed_resized = F.interpolate(
+                    pos_embed_3d,
+                    size=(h, w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                pos_embed = pos_embed_resized.permute(0, 2, 3, 1)
+
+            x = x + pos_embed
 
         if self.training and self.rdrop > 0:
             nlay = len(self.encoder.blocks)
