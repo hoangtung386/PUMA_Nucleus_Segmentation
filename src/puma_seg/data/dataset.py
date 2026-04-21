@@ -239,7 +239,7 @@ class PUMAClassificationDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         crop = self.crops[idx].copy()
-        label = self.labels[idx]
+        label = self.labels[idx] - 1 # Trừ đi 1 để nhãn [1, 2, 3] trở thành [0, 1, 2] phù hợp với CrossEntropyLoss (n_classes=3)
 
         result = self.transform(image=crop)
         tensor = result["image"]  # already a FloatTensor from ToTensorV2
