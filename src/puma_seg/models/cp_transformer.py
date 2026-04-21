@@ -114,8 +114,7 @@ class CPTransformer(nn.Module):
             blk.window_size = 0
 
         self._dtype = dtype
-        if dtype != torch.float32:
-            self.to(dtype)
+        self.to(dtype)
 
     @property
     def dtype(self) -> torch.dtype:
@@ -216,6 +215,7 @@ class CPTransformer(nn.Module):
 
         if self.dtype != torch.float32:
             self.to(self.dtype)
+        logger.info(f"Model dtype after loading: {next(self.parameters()).dtype}")
 
         logger.info("Loaded CP4 checkpoint from: %s", PATH)
 
@@ -374,7 +374,7 @@ class CPTransformer(nn.Module):
 def load_cpsam_checkpoint(
     checkpoint_path: Optional[str] = None,
     device: Optional[torch.device] = None,
-    dtype: torch.dtype = torch.bfloat16,
+    dtype: torch.dtype = torch.float32,
 ) -> CPTransformer:
     """Load CPTransformer with CPSAM checkpoint.
 
