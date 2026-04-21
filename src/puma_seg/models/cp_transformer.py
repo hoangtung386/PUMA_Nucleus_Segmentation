@@ -79,8 +79,8 @@ class CPTransformer(nn.Module):
         self.encoder.patch_embed.proj = nn.Conv2d(3, nchan, stride=ps, kernel_size=ps)
         self.encoder.patch_embed.proj.weight.data = w[:, :, :: 16 // ps, :: 16 // ps]
 
-        target_h = 1024 // ps
-        target_w = 1024 // ps
+        target_h = 256 // ps
+        target_w = 256 // ps
         orig_shape = self.encoder.pos_embed.shape
         orig_h = orig_shape[1]
         orig_w = orig_shape[2]
