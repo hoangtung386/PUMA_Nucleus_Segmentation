@@ -33,6 +33,11 @@ class CP4Loss(nn.Module):
     ) -> torch.Tensor:
         pred_flow = pred[:, :2]
         pred_cellprob = pred[:, 2:3]
+        _, _, pred_h, pred_w = pred_flow.shape
+        target_h, target_w = y_flow.shape[1], y_flow.shape[2]
+        if pred_h != target_h or pred_w != target_w:
+            pred_flow = F.interpolate(pred_flow, size=(target_h, target_w), mode="bilinear", align_corners=False)
+            pred_cellprob = F.interpolate(pred_cellprob, size=(target_h, target_w), mode="bilinear", align_corners=False)
         flow_target = torch.cat([y_flow, x_flow], dim=1)
         flow_loss = F.l1_loss(pred_flow, flow_target, reduction="mean")
         cellprob_loss = self.bce(pred_cellprob.squeeze(1), cellprob)
