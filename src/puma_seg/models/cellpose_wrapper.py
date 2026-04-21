@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from cellpose.models import CPTransformer
+from cellpose.vit_sam import Transformer as CPTransformer
 
 logger = logging.getLogger(__name__)
 
