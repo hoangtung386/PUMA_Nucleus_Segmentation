@@ -98,7 +98,7 @@ class CellposeSegmentor:
             if not path.exists():
                 raise FileNotFoundError(f"CPSAM checkpoint not found: {path}")
             self._cp_transformer = CPTransformer(dtype=dtype)
-            self._cp_transformer.load_model(str(path), device=device)
+            self._cp_transformer.load_model(str(path), device=device, strict=False)
             self._cp_transformer.eval()
             self._cp_transformer.to(device)
 

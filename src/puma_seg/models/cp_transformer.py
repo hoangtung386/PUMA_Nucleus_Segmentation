@@ -407,7 +407,7 @@ def load_cpsam_checkpoint(
                 "Or provide checkpoint_path manually."
             )
 
-    model.load_model(checkpoint_path, device=device)
+    model.load_model(checkpoint_path, device=device, strict=False)
     model.eval()
     model.to(device)
 
