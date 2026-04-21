@@ -310,10 +310,10 @@ class CPTransformer(nn.Module):
             n_batches = 0
 
             for img, y_flow, x_flow, cellprob in train_loader:
-                img = img.to(device)
-                y_flow = y_flow.to(device)
-                x_flow = x_flow.to(device)
-                cellprob = cellprob.to(device)
+                img = img.to(device).to(self.dtype)
+                y_flow = y_flow.to(device).to(self.dtype)
+                x_flow = x_flow.to(device).to(self.dtype)
+                cellprob = cellprob.to(device).to(self.dtype)
 
                 optimizer.zero_grad()
                 pred, _ = self.forward(img)
@@ -337,10 +337,10 @@ class CPTransformer(nn.Module):
 
                 with torch.no_grad():
                     for img, y_flow, x_flow, cellprob in val_loader:
-                        img = img.to(device)
-                        y_flow = y_flow.to(device)
-                        x_flow = x_flow.to(device)
-                        cellprob = cellprob.to(device)
+                        img = img.to(device).to(self.dtype)
+                        y_flow = y_flow.to(device).to(self.dtype)
+                        x_flow = x_flow.to(device).to(self.dtype)
+                        cellprob = cellprob.to(device).to(self.dtype)
 
                         pred, _ = self.forward(img)
                         loss = loss_fn(pred, y_flow, x_flow, cellprob)
