@@ -135,11 +135,15 @@ class PUMASegmentationDataset(Dataset):
 
         Used by ``cellpose.train.train_seg`` which expects lists, not tensors.
         """
+        logger.info(f"Loading {len(self)} images and masks to memory...")
         images, masks = [], []
         for idx in range(len(self)):
+            if idx % 20 == 0:
+                logger.info(f"Loading data: {idx}/{len(self)}")
             img, msk = self[idx]
             images.append(img)
             masks.append(msk)
+        logger.info(f"Loaded {len(images)} images ({sum(img.nbytes for img in images) / 1e9:.2f} GB)")
         return images, masks
 
 
