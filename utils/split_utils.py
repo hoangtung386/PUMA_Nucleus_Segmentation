@@ -1,8 +1,12 @@
+"""Leakage-safe train/val split using group-based splitting by source image."""
+
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import torch
+
+from training.logging_utils import logger
 
 
 def _safe_int(value, default: int) -> int:
@@ -23,61 +27,6 @@ def _safe_str_list(value) -> List[str]:
     return [str(x) for x in arr.reshape(-1).tolist()]
 
 
-def make_or_load_split(
-    dataset_size: int,
-    split_path,
-    seed: int = 42,
-    train_fraction: float = 0.8,
-    force_new: bool = False,
-) -> Tuple[List[int], List[int]]:
-    """Index-level split retained for backward compatibility.
-
-    For the rare-focused pipeline, prefer make_or_load_group_split because rare
-    crops must not be split away from their source image.
-    """
-    split_path = Path(split_path)
-    split_path.parent.mkdir(parents=True, exist_ok=True)
-    dataset_size = int(dataset_size)
-
-    if dataset_size <= 1:
-        raise RuntimeError(f"Dataset too small for split: dataset_size={dataset_size}")
-
-    if split_path.exists() and not force_new:
-        data = np.load(split_path, allow_pickle=True)
-        train_idx = np.asarray(data["train_indices"], dtype=np.int64).reshape(-1).tolist()
-        val_idx = np.asarray(data["val_indices"], dtype=np.int64).reshape(-1).tolist()
-        saved_size = _safe_int(data["dataset_size"] if "dataset_size" in data else None, dataset_size)
-        if saved_size != dataset_size:
-            raise RuntimeError(
-                f"Split file dataset size mismatch. Saved={saved_size}, current={dataset_size}. "
-                f"Delete {split_path} and rerun training."
-            )
-        print(f"[Split] Loaded existing index split: {split_path}")
-        print(f"[Split] Train samples: {len(train_idx)}")
-        print(f"[Split] Val samples: {len(val_idx)}")
-        return train_idx, val_idx
-
-    generator = torch.Generator().manual_seed(int(seed))
-    indices = torch.randperm(dataset_size, generator=generator).numpy()
-    split = int(round(float(train_fraction) * dataset_size))
-    split = max(1, min(split, dataset_size - 1))
-    train_idx = indices[:split].astype(np.int64)
-    val_idx = indices[split:].astype(np.int64)
-    np.savez(
-        split_path,
-        split_type=np.asarray(["index"], dtype=object),
-        train_indices=train_idx,
-        val_indices=val_idx,
-        dataset_size=np.asarray([dataset_size], dtype=np.int64),
-        seed=np.asarray([seed], dtype=np.int64),
-        train_fraction=np.asarray([train_fraction], dtype=np.float32),
-    )
-    print(f"[Split] Created new index split: {split_path}")
-    print(f"[Split] Train samples: {len(train_idx)}")
-    print(f"[Split] Val samples: {len(val_idx)}")
-    return train_idx.tolist(), val_idx.tolist()
-
-
 def make_or_load_group_split(
     source_names: Sequence[str],
     is_original: Sequence[bool],
@@ -93,8 +42,7 @@ def make_or_load_group_split(
     derived from the same source are forced into the same side as that source.
 
     If val_original_only=True, validation contains only original 1024 samples;
-    rare-centered crops are used only in training. This keeps validation honest
-    and avoids measuring on synthetic/translated rare crops.
+    rare-centered crops are used only in training.
     """
     split_path = Path(split_path)
     split_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,11 +96,11 @@ def make_or_load_group_split(
             else:
                 raise RuntimeError(f"Sample source {src!r} is not present in loaded split file")
 
-        print(f"[Split] Loaded existing GROUP split: {split_path}")
-        print(f"[Split] Train source groups: {len(train_sources)}")
-        print(f"[Split] Val source groups: {len(val_sources)}")
-        print(f"[Split] Train samples: {len(train_idx)}")
-        print(f"[Split] Val samples: {len(val_idx)} | val_original_only={val_original_only}")
+        logger.info("Loaded existing GROUP split: %s", split_path)
+        logger.info("Train source groups: %d", len(train_sources))
+        logger.info("Val source groups: %d", len(val_sources))
+        logger.info("Train samples: %d", len(train_idx))
+        logger.info("Val samples: %d | val_original_only=%s", len(val_idx), val_original_only)
         return train_idx, val_idx
 
     generator = torch.Generator().manual_seed(int(seed))
@@ -192,9 +140,9 @@ def make_or_load_group_split(
         val_original_only=np.asarray([bool(val_original_only)], dtype=bool),
     )
 
-    print(f"[Split] Created new GROUP split: {split_path}")
-    print(f"[Split] Train source groups: {len(train_sources)}")
-    print(f"[Split] Val source groups: {len(val_sources)}")
-    print(f"[Split] Train samples: {len(train_idx)}")
-    print(f"[Split] Val samples: {len(val_idx)} | val_original_only={val_original_only}")
+    logger.info("Created new GROUP split: %s", split_path)
+    logger.info("Train source groups: %d", len(train_sources))
+    logger.info("Val source groups: %d", len(val_sources))
+    logger.info("Train samples: %d", len(train_idx))
+    logger.info("Val samples: %d | val_original_only=%s", len(val_idx), val_original_only)
     return train_idx, val_idx

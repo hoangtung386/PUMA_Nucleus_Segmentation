@@ -1,12 +1,13 @@
 import os
 from pathlib import Path
 
+import timm
 import torch
 import torch.nn as nn
-import timm
 from huggingface_hub import hf_hub_download
 
 from models.cross_attention import SpatialInjector
+from training.logging_utils import logger
 
 
 def build_uni_vit():
@@ -42,7 +43,7 @@ def get_frozen_uni_model(local_dir=Path.cwd(), load_weights=True, allow_download
         if not weight_path.exists():
             if not allow_download:
                 raise FileNotFoundError(f"UNI weight file not found: {weight_path}")
-            print("Downloading UNI weights from HuggingFace...")
+            logger.info("Downloading UNI weights from HuggingFace...")
             hf_hub_download("MahmoodLab/UNI", filename="pytorch_model.bin", local_dir=str(local_dir))
         model.load_state_dict(torch.load(weight_path, map_location="cpu"), strict=True)
 

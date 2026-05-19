@@ -1,50 +1,24 @@
-from pathlib import Path
 import json
+from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-
-PUMA_TISSUE_ID_TO_NAME = {
-    0: "background",
-    1: "tissue_stroma",
-    2: "tissue_blood_vessel",
-    3: "tissue_tumor",
-    4: "tissue_epidermis",
-    5: "tissue_necrosis",
-}
-
-INTERNAL_TISSUE_ID_TO_NAME = {
-    0: "tissue_stroma",
-    1: "tissue_blood_vessel",
-    2: "tissue_tumor",
-    3: "tissue_epidermis",
-    4: "tissue_necrosis",
-}
-
-PUMA_NUCLEI_ID_TO_NAME = {
-    0: "nuclei_tumor",
-    1: "nuclei_lymphocyte",
-    2: "nuclei_plasma_cell",
-    3: "nuclei_histiocyte",
-    4: "nuclei_melanophage",
-    5: "nuclei_neutrophil",
-    6: "nuclei_stroma",
-    7: "nuclei_epithelium",
-    8: "nuclei_endothelium",
-    9: "nuclei_apoptosis",
-}
-
-RARE_TISSUE_IDS_PUMA = [2, 4, 5]
-RARE_NUCLEI_IDS = [2, 4, 5, 8, 9]
+from data.constants import (
+    IGNORE_INDEX,
+    NORMALIZATION_MEAN,
+    NORMALIZATION_STD,
+)
+from data.dataset.sampling import compute_all_sample_weights
+from training.logging_utils import logger
 
 
 def puma_tissue_to_internal(tissue_puma):
     """Convert stored PUMA tissue IDs 0..5 into targets 0..4 plus ignore=255."""
     out = tissue_puma.astype(np.int64).copy()
-    out[out == 0] = 255
-    valid = out != 255
+    out[out == 0] = IGNORE_INDEX
+    valid = out != IGNORE_INDEX
     out[valid] = out[valid] - 1
     return out
 
@@ -73,8 +47,6 @@ class PUMADataset(Dataset):
 
     Important leakage control:
         self.source_names maps every rare crop back to its original image.
-        train_stage1.py/train_stage2.py use group splitting on source_names.
-        Validation uses original samples only by default.
     """
 
     def __init__(self, data_dir, transforms=None, zero_cellpose_prob=0.0):
@@ -103,7 +75,7 @@ class PUMADataset(Dataset):
                 if name:
                     out[str(name)] = row
         except Exception as exc:
-            print(f"[Dataset][WARN] Could not read {path}: {exc}")
+            logger.warning("Could not read %s: %s", path, exc)
         return out
 
     def _validate_files(self):
@@ -158,45 +130,9 @@ class PUMADataset(Dataset):
     def compute_sample_weights(self, indices=None):
         if indices is None:
             indices = list(range(len(self)))
-        weights = []
-        for idx in indices:
-            idx = int(idx)
-            base_name = self.get_base_name(idx)
-            meta = self.metadata.get(base_name)
-            if meta is not None and "sample_weight" in meta:
-                weights.append(float(meta["sample_weight"]))
-                continue
-
-            weight = 1.0
-            tissue_path = self.data_dir / "tissue_sem" / f"{base_name}.npy"
-            nuclei_path = self.data_dir / "nuclei_nc" / f"{base_name}.npy"
-
-            if tissue_path.exists():
-                tissue = np.load(tissue_path, mmap_mode="r")
-                if np.any(tissue == 2):
-                    weight += 3.0
-                if np.any(tissue == 4):
-                    weight += 2.0
-                if np.any(tissue == 5):
-                    weight += 6.0
-
-            if nuclei_path.exists():
-                nuclei = np.load(nuclei_path, mmap_mode="r")
-                if np.any(nuclei == 2):
-                    weight += 6.0
-                if np.any(nuclei == 4):
-                    weight += 4.0
-                if np.any(nuclei == 5):
-                    weight += 8.0
-                if np.any(nuclei == 8):
-                    weight += 5.0
-                if np.any(nuclei == 9):
-                    weight += 8.0
-
-            if self.is_rare_augmented(idx):
-                weight *= 1.5
-            weights.append(float(weight))
-        return weights
+        base_names = [self.get_base_name(i) for i in indices]
+        is_rare = [self.is_rare_augmented(i) for i in indices]
+        return compute_all_sample_weights(self.data_dir, base_names, is_rare, self.metadata)
 
     @staticmethod
     def _ensure_hwc_2ch(x: np.ndarray, h: int, w: int) -> np.ndarray:
@@ -258,13 +194,13 @@ class PUMADataset(Dataset):
 
         if isinstance(image, np.ndarray):
             image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-            mean = torch.tensor([0.485, 0.456, 0.406], dtype=image.dtype).view(3, 1, 1)
-            std = torch.tensor([0.229, 0.224, 0.225], dtype=image.dtype).view(3, 1, 1)
+            mean = torch.tensor(NORMALIZATION_MEAN, dtype=image.dtype).view(3, 1, 1)
+            std = torch.tensor(NORMALIZATION_STD, dtype=image.dtype).view(3, 1, 1)
             image = (image - mean) / std
 
         tissue_internal = torch.as_tensor(tissue_internal, dtype=torch.long)
         nuclei_nc = torch.as_tensor(nuclei_nc, dtype=torch.long)
-        nuclei_np = (nuclei_nc != 255).long()
+        nuclei_np = (nuclei_nc != IGNORE_INDEX).long()
 
         if isinstance(cellpose_flow, np.ndarray):
             cellpose_flow = torch.from_numpy(cellpose_flow.transpose(2, 0, 1)).float()

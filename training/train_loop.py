@@ -1,3 +1,5 @@
+"""Shared training loop primitives."""
+
 import torch
 from tqdm import tqdm
 
@@ -66,7 +68,7 @@ def validate(model, dataloader, criterion, metrics_calculator, device, epoch):
 
         metrics = metrics_calculator.calculate_all_metrics(preds, targets)
         for k, v in metrics.items():
-            if isinstance(v, float) and v != v:  # NaN
+            if isinstance(v, float) and v != v:
                 continue
             metric_sum[k] = metric_sum.get(k, 0.0) + float(v)
 

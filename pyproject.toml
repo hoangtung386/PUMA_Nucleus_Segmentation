@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "symbiopan"
+version = "7.0.0"
+description = "PUMA Grand Challenge Track 2 — Panoptic Segmentation for Melanoma"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "timm==0.9.6",
+    "huggingface_hub",
+    "albumentations",
+    "opencv-python-headless",
+    "scipy",
+    "numpy",
+    "tifffile",
+    "tqdm",
+    "Pillow",
+    "cellpose",
+    "bitsandbytes",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
