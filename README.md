@@ -8,6 +8,19 @@ Two-stage panoptic segmentation pipeline for the [PUMA Grand Challenge](https://
 pip install -e ".[dev]"
 ```
 
+### Notebook (Colab / Jupyter)
+
+Open [`notebooks/train_model.ipynb`](notebooks/train_model.ipynb) for a fully interactive pipeline with:
+- Google Drive mount + git clone + dependency install
+- Automatic GPU VRAM detection and batch-size scaling (A100 80GB → batch 64)
+- Loss schedule visualization, per-class Dice/IoU plots, S1 vs S2 comparison
+- Data leakage prevention verification (group-based split, `val_original_only`)
+- Dry-run / full-run Stage 1 + Stage 2 training with checkpoint verification
+
+```bash
+jupyter notebook notebooks/train_model.ipynb
+```
+
 ### Preprocess
 ```bash
 # Expects: Dataset/01_training_dataset_tif_ROIs/*.tif
@@ -16,25 +29,48 @@ pip install -e ".[dev]"
 python scripts/run_preprocess.py
 ```
 
+Configurable via `PreprocessConfig` in `configs/defaults.py`: tile size, rare-crop generation, Cellpose model type (default `cyto3`).
+
 ### Train Stage 1
 ```bash
 python scripts/run_stage1.py
+# Optional overrides:
+#   --epochs 50 --lr 1e-4 --batch-size 12 --val-ratio 0.2 --resume checkpoints/puma_epoch_last_s1.pth
 ```
+
+Saves `checkpoints/puma_epoch_best_s1.pth` (best selection score) and `puma_epoch_last_s1.pth`.
 
 ### Train Stage 2
 ```bash
 python scripts/run_stage2.py
+# Optional overrides:
+#   --epochs 30 --lr 1e-4 --batch-size 16 --val-ratio 0.2
 ```
+
+Requires `checkpoints/puma_epoch_best_s1.pth` from Stage 1.
+Saves `checkpoints/nuclei_refiner_residual_best.pth` and `nuclei_refiner_residual_last.pth`.
 
 ### Inference
 ```bash
-python scripts/run_inference.py --input <tif_dir> --output <out_dir> --cp <checkpoint>
+python scripts/run_inference.py \
+  --input <tif_dir> --output <out_dir> \
+  --cp checkpoints/best_model.pth \
+  [--stage2-cp checkpoints/nuclei_refiner_residual_best.pth] \
+  [--site-type primary|metastatic] \
+  [--cellpose-mode auto|generate|zero] \
+  [--tile-size 1024] [--overlap 256] \
+  [--np-threshold 0.50]
 ```
 
 ### Docker Inference
 ```bash
 make docker-build
 make docker-run
+```
+
+### Run Tests
+```bash
+python -m pytest tests/
 ```
 
 ## Project Structure
@@ -89,12 +125,16 @@ SymbioPan/
 │   ├── run_stage1.py
 │   ├── run_stage2.py
 │   └── run_inference.py
-├── notebooks/                  # Development notebooks
+├── notebooks/                  # Development notebooks (see train_model.ipynb)
+│   └── train_model.ipynb
 ├── checkpoints/                # Training output weights + Docker deployment weights
 ├── dataset_processed/          # Preprocessed .npy files
 ├── test/                       # Docker test input (TIFF images)
 ├── output/                     # Docker inference output
-├── tests/                      # Unit tests
+├── tests/                      # Unit tests (pytest)
+│   ├── test_losses.py
+│   ├── test_metrics.py
+│   └── test_models.py
 ├── Dockerfile                  # Multi-stage Docker build for Grand Challenge
 ├── inference.sh                # Docker entrypoint
 ├── Makefile                    # Common targets
@@ -170,6 +210,49 @@ SymbioPan/
 **Nuclei JSON**: at `output/melanoma-10-class-nuclei-segmentation.json`
 - Multiple polygons with class labels, seed points, and probability scores.
 
+## Google Colab (High-VRAM Setup)
+
+`notebooks/train_model.ipynb` auto-detects available GPU VRAM and scales batch sizes:
+
+| VRAM | Stage 1 batch | Stage 2 batch |
+|------|--------------|--------------|
+| A100 80GB+ (G4) | 64 | 128 |
+| A100 40GB | 32 | 64 |
+| V100 32GB | 16 | 32 |
+| 16GB | 8 | 16 |
+
+The notebook also:
+- Enables **bfloat16** mixed precision on Ampere+ GPUs (more stable than float16)
+- Enables **gradient checkpointing** for the UNI ViT encoder
+- Enables **multi-GPU** DataParallel when multiple GPUs are detected
+- Applies `$object.__setattr__` patches to frozen config dataclasses at runtime
+
+## Verify Data Leakage Prevention
+
+The notebook includes a leakage-prevention verification cell:
+```python
+python -c "
+import numpy as np
+data = np.load('checkpoints/split_seed42.npz', allow_pickle=True)
+train_src, val_src = set(data['train_sources']), set(data['val_sources'])
+assert len(train_src & val_src) == 0, 'LEAKAGE DETECTED!'
+print(f'OK: {len(train_src)} train / {len(val_src)} val groups, no overlap')
+"
+```
+
+## Training Manifest
+
+After training completes (via notebook Section 13b), `checkpoints/training_manifest.json` is generated:
+```json
+{
+  "pipeline": "SymbioPan PUMA Track 2",
+  "checkpoints": [...],
+  "stage1_config": { "batch_size": 64, "epochs": 50, ... },
+  "stage2_config": { "batch_size": 128, "epochs": 30, ... },
+  "leakage_prevention": { "split": "group_based", "val_original_only": true }
+}
+```
+
 ## Configuration
 
 All training/inference parameters are centralized in `configs/defaults.py` as `@dataclass(frozen=True)` classes:
@@ -177,6 +260,32 @@ All training/inference parameters are centralized in `configs/defaults.py` as `@
 - `Stage2Config` — stage 2 hyperparameters
 - `PreprocessConfig` — preprocessing parameters
 - `InferenceConfig` — inference parameters
+
+## Inference CLI Reference
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input` | `/input/images/melanoma-whole-slide-image` | TIFF input directory |
+| `--output` | `/output` | Output directory |
+| `--cp` | `checkpoints/best_model.pth` | Stage 1 panoptic checkpoint |
+| `--stage2-cp` | `None` | Stage 2 residual refiner checkpoint |
+| `--tile-size` | `1024` | Sliding window tile size |
+| `--overlap` | `256` | Tile overlap in pixels |
+| `--site-type` | auto-detect | `primary` \| `metastatic` override |
+| `--site-classifier-cp` | `checkpoints/site_classifier_atto.pth` | Site classifier checkpoint |
+| `--cellpose-mode` | `auto` | `auto` (fallback to zero) \| `generate` (fresh Cellpose) \| `zero` |
+| `--np-threshold` | `0.50` | Nuclei probability threshold |
+| `--min-nucleus-area` | `20` | Minimum nucleus area in pixels |
+
+## Training CLI Reference
+
+| Flag | Stage 1 | Stage 2 |
+|------|---------|---------|
+| `--epochs` | 50 | 30 |
+| `--lr` | 1e-4 | 1e-4 |
+| `--batch-size` | 12 | 16 |
+| `--val-ratio` | 0.2 | 0.2 |
+| `--resume` | `checkpoints/puma_epoch_last_s1.pth` | N/A |
 
 ## Docker Checkpoint Layout
 
@@ -195,20 +304,29 @@ checkpoints/nuclei_refiner_residual_best.pth
 
 ## Version History
 
-### v6 - Smooth Stage 1 Ramp
+### v7 — Training Notebook + Colab Setup
+- Comprehensive `notebooks/train_model.ipynb` with 80 cells covering the full pipeline.
+- Google Drive mount, git clone, dependency install, GPU VRAM auto-config.
+- Loss schedule, per-class Dice/IoU, S1 vs S2 visualization (matplotlib).
+- `SemanticMetricAccumulator` multi-batch accumulation demo.
+- Data leakage prevention verification (group-based split, `val_original_only`).
+- Stage 1 / Stage 2 actual training cells with checkpoint save/verify.
+- `training_manifest.json` export after training completion.
+
+### v6 — Smooth Stage 1 Ramp
 - Ablation 1: HoVer-NeXt-style NP/HV decoder heads.
 - Ablation 2: ASPP tissue head.
 - Stage 1 ramps FocalTversky, SC-DFA, and spatial prior smoothly.
 - Schedule: FocalTversky epoch 10→16 (max 0.5), SC-DFA epoch 15→22 (max 0.3), Spatial prior epoch 20→28 (max 0.2).
 - Rare sampler is gentler: max sample weight 15.0, samples_per_epoch_multiplier 1.0.
 
-### v5 - Rare-Focused
+### v5 — Rare-Focused
 - Rare-centered augmented crops from preprocessing.
 - Group-based split for leakage-safe train/val.
 - Weighted random sampling with rare-class bonuses.
 - Best checkpoint: `checkpoints/puma_epoch_best_s1.pth`.
 
-### v2.2+4 - Merge
+### v2.2+4 — Merge
 - Keeps Version 2.2 panoptic architecture with Version 4 preprocessing.
 - Stage 2 input is 21 channels: 3 image + 5 tissue probs + 10 nuclei probs + 1 NP prob + 2 HV.
 
