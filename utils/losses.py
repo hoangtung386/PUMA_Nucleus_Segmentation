@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from data.constants import LOSS_MULTIPLIERS, NUCLEI_CLASS_WEIGHTS, TISSUE_CLASS_WEIGHTS
+from training.logging_utils import logger
+
 
 class SafeCrossEntropyLoss(nn.Module):
     def __init__(self, weight=None, ignore_index=255):
@@ -116,13 +119,9 @@ class MultiTaskUncertaintyLoss(nn.Module):
         self.focal_tversky_weight = 0.0
 
         if tissue_weights is None:
-            # Internal order: stroma, blood_vessel, tumor, epidermis, necrosis.
-            # Strong weights for blood vessel/epidermis/necrosis.
-            tissue_weights = torch.tensor([1.0, 4.0, 0.8, 3.0, 7.0], dtype=torch.float32)
+            tissue_weights = torch.tensor(TISSUE_CLASS_WEIGHTS, dtype=torch.float32)
         if nuclei_weights is None:
-            # Order: tumor, lymphocyte, plasma, histiocyte, melanophage,
-            # neutrophil, stroma, epithelium, endothelium, apoptosis.
-            nuclei_weights = torch.tensor([0.8, 1.0, 7.0, 2.5, 4.5, 8.0, 2.0, 2.5, 5.5, 8.0], dtype=torch.float32)
+            nuclei_weights = torch.tensor(NUCLEI_CLASS_WEIGHTS, dtype=torch.float32)
 
         self.register_buffer("tissue_weights", tissue_weights.float())
         self.register_buffer("nuclei_weights", nuclei_weights.float())
@@ -164,7 +163,7 @@ class MultiTaskUncertaintyLoss(nn.Module):
         # Backward-compatible API for older scripts.
         if not self.use_focal_tversky or self.focal_tversky_weight < 1.0:
             self.set_focal_tversky_weight(1.0)
-            print("[Loss] Switched tissue/nuclei semantic losses to CE + full FN-focused FocalTversky")
+            logger.info("Switched tissue/nuclei semantic losses to CE + full FN-focused FocalTversky")
 
     def forward(self, preds, targets):
         tissue_target = targets["tissue_sem"]
@@ -193,12 +192,11 @@ class MultiTaskUncertaintyLoss(nn.Module):
         losses = [l_tissue, l_np, l_nc, l_hv]
 
         # More semantic emphasis than before because rare class recognition is weak.
-        multipliers = [2.5, 1.0, 2.8, 1.0]
+        multipliers = LOSS_MULTIPLIERS
         total = 0.0
         for i, loss in enumerate(losses):
             total = total + multipliers[i] * (torch.exp(-self.log_vars[i]) * loss + self.log_vars[i])
         return total, [float(x.detach().item()) for x in losses]
 
 
-# Compatibility alias.
-DecoupledPUMALoss = MultiTaskUncertaintyLoss
+

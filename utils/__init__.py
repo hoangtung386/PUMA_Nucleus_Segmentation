@@ -1,4 +1,4 @@
-from .losses import MultiTaskUncertaintyLoss, DecoupledPUMALoss
-from .metrics import PUMAMetrics
-from .priors import SpatialLogitAdjuster
-from .sc_dfa import SCDFA
+from .losses import MultiTaskUncertaintyLoss  # noqa: F401
+from .metrics import PUMAMetrics  # noqa: F401
+from .priors import SpatialLogitAdjuster  # noqa: F401
+from .sc_dfa import SCDFA  # noqa: F401

@@ -14,14 +14,18 @@ USER user
 WORKDIR /opt/app
 ENV PATH="/home/user/.local/bin:${PATH}"
 
-COPY requirements.txt /opt/app/
-RUN pip install --user --no-cache-dir -r requirements.txt
+COPY pyproject.toml /opt/app/
+RUN pip install --user --no-cache-dir -e .
 
-COPY --chown=user:user dataloaders/ /opt/app/dataloaders/
+COPY --chown=user:user data/ /opt/app/data/
 COPY --chown=user:user models/ /opt/app/models/
 COPY --chown=user:user utils/ /opt/app/utils/
-COPY --chown=user:user infer_wsi.py inference.sh /opt/app/
-COPY --chown=user:user checkpoint/ /opt/app/checkpoint/
+COPY --chown=user:user configs/ /opt/app/configs/
+COPY --chown=user:user training/ /opt/app/training/
+COPY --chown=user:user inference/ /opt/app/inference/
+COPY --chown=user:user scripts/ /opt/app/scripts/
+COPY --chown=user:user inference.sh /opt/app/
+COPY --chown=user:user checkpoints/ /opt/app/checkpoints/
 
 RUN chmod +x /opt/app/inference.sh
 

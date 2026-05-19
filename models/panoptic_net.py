@@ -2,8 +2,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.decoders import ParallelDecoders
+from models.encoder import UnifiedPanopticEncoder
 from models.fpn_aggregator import FPNAggregator
-from models.uni_encoder import UnifiedPanopticEncoder
 from utils.priors import SpatialLogitAdjuster
 from utils.sc_dfa import SCDFA
 
