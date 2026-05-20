@@ -5,7 +5,7 @@ huggingface_hub
 albumentations
 opencv-python-headless
 scipy
-numpy<2.1
+numpy<2.0
 tifffile
 tqdm
 cellpose
