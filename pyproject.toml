@@ -15,7 +15,7 @@ dependencies = [
     "albumentations",
     "opencv-python-headless",
     "scipy",
-    "numpy",
+    "numpy<2.1",
     "tifffile",
     "tqdm",
     "Pillow",
