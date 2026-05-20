@@ -1,6 +1,7 @@
 """Rare-class-focused preprocessing for PUMA Track 2."""
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
@@ -220,6 +221,8 @@ def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metad
 
 def main() -> None:
     import random
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Lock
 
     random.seed(cfg.random_seed)
     np.random.seed(cfg.random_seed)
@@ -245,9 +248,19 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     flow_generator = CellposeFlowGenerator(cfg.generate_cellpose_flows, cfg.cellpose_model_type, device=device)
     metadata: List[dict] = []
+    meta_lock = Lock()
+    num_workers = min(os.cpu_count() or 4, 8)
 
-    for img_path in tqdm(img_files, desc="Preprocess rare-focused"):
-        process_one_roi(img_path, flow_generator, metadata)
+    def _process_one(img_path):
+        local_meta: List[dict] = []
+        process_one_roi(img_path, flow_generator, local_meta)
+        with meta_lock:
+            metadata.extend(local_meta)
+
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        futures = [pool.submit(_process_one, p) for p in img_files]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Preprocess rare-focused"):
+            f.result()
 
     metadata_path = out_dir / "sample_metadata.json"
     if cfg.rebuild_metadata or not metadata_path.exists():
