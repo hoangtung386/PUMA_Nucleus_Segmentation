@@ -234,7 +234,7 @@ def main() -> None:
     if not img_files:
         raise FileNotFoundError(f"No TIFF files found in {image_dir}")
 
-logger.info("Root: %s", PATHS.root)
+    logger.info("Root: %s", PATHS.root)
     logger.info("Raw: %s", raw_dir)
     logger.info("Output: %s", out_dir)
     logger.info("Images: %d", len(img_files))
