@@ -81,10 +81,12 @@ class SoftDiceLoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, logits, targets):
-        probs = torch.sigmoid(logits)
+        probs = torch.sigmoid(logits.squeeze(1))
         targets = targets.float()
-        inter = (probs * targets).sum(dim=(1, 2, 3))
-        den = probs.sum(dim=(1, 2, 3)) + targets.sum(dim=(1, 2, 3))
+        if targets.dim() > probs.dim():
+            targets = targets.squeeze(1)
+        inter = (probs * targets).sum(dim=(1, 2))
+        den = probs.sum(dim=(1, 2)) + targets.sum(dim=(1, 2))
         return (1.0 - (2.0 * inter + self.smooth) / (den + self.smooth)).mean()
 
 
