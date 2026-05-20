@@ -25,7 +25,7 @@ from data.constants import (
 )
 from data.dataset import PUMADataset, get_train_transforms, get_val_transforms
 from models import UnifiedPanopticNet, build_cnn_backbone
-from training import safe_torch_save
+from training import safe_torch_save, safe_torch_save_entity
 from training.logging_utils import logger
 from training.train_loop import train_one_epoch, validate
 from utils import MultiTaskUncertaintyLoss, PUMAMetrics
@@ -80,6 +80,8 @@ def save_checkpoint(path, model, criterion, optimizer, scheduler, scaler, epoch,
         "inference_config": make_inference_config(core),
     }
     safe_torch_save(payload, path)
+    entity_path = path.with_name(path.stem + "_full" + path.suffix)
+    safe_torch_save_entity(core, entity_path)
 
 
 def make_rare_weighted_sampler(dataset, indices):

@@ -24,7 +24,7 @@ from models import (
     build_cnn_backbone,
     build_stage2_input,
 )
-from training.checkpoint import extract_state_dict, load_large_checkpoint, safe_torch_save
+from training.checkpoint import extract_state_dict, load_large_checkpoint, safe_torch_save, safe_torch_save_entity
 from training.logging_utils import logger
 from utils import PUMAMetrics
 from utils.losses import FocalTverskyLoss, SafeCrossEntropyLoss
@@ -334,14 +334,18 @@ def main():
         }
 
         if epoch % 5 == 0 or epoch == cfg.epochs:
-            safe_torch_save(ckpt_payload, PATHS.checkpoint_dir / "nuclei_refiner_residual_last.pth")
+            last_path = PATHS.checkpoint_dir / "nuclei_refiner_residual_last.pth"
+            safe_torch_save(ckpt_payload, last_path)
+            safe_torch_save_entity(model_s2, last_path.with_name(last_path.stem + "_full" + last_path.suffix))
 
         score = float(results["selection_score"])
         if score > best_score:
             best_score = score
             best_epoch = epoch
             best_improvement = float(results["improvement_score"])
-            safe_torch_save(ckpt_payload, PATHS.checkpoint_dir / "nuclei_refiner_residual_best.pth")
+            best_path = PATHS.checkpoint_dir / "nuclei_refiner_residual_best.pth"
+            safe_torch_save(ckpt_payload, best_path)
+            safe_torch_save_entity(model_s2, best_path.with_name(best_path.stem + "_full" + best_path.suffix))
             logger.info("Saved Stage 2 best: epoch=%d score=%.4f improvement=%+.4f", best_epoch, best_score, best_improvement)
 
         if not results["beats_stage1"]:
