@@ -7,6 +7,7 @@ from typing import Iterable, List, Tuple
 import cv2
 import numpy as np
 import tifffile as tiff
+import torch
 from tqdm import tqdm
 
 from configs import PATHS, PREPROCESS_DEFAULT_CONFIG
@@ -241,7 +242,8 @@ def main() -> None:
     logger.info("Rare crops: enabled=%s max_per_image=%d", cfg.make_rare_centered_crops, cfg.max_rare_crops_per_image)
     logger.info("Cellpose: generate_cellpose_flows=%s", cfg.generate_cellpose_flows)
 
-    flow_generator = CellposeFlowGenerator(cfg.generate_cellpose_flows, cfg.cellpose_model_type)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    flow_generator = CellposeFlowGenerator(cfg.generate_cellpose_flows, cfg.cellpose_model_type, device=device)
     metadata: List[dict] = []
 
     for img_path in tqdm(img_files, desc="Preprocess rare-focused"):
