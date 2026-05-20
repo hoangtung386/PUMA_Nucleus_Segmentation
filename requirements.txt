@@ -4,8 +4,8 @@ timm==0.9.6
 huggingface_hub
 albumentations
 opencv-python-headless
-scipy<1.14
-numpy<2.0
+scipy
+numpy>=2.0,<2.1
 tifffile
 tqdm
 cellpose
