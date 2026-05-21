@@ -1,14 +1,43 @@
 """Shared training loop primitives."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 import torch
 from tqdm import tqdm
 
+if TYPE_CHECKING:
+    from utils import PUMAMetrics
 
-def _autocast_context(device):
+
+def _autocast_context(device: torch.device) -> torch.amp.autocast:
+    """Return an autocast context manager for the given device.
+
+    Args:
+        device: A ``torch.device`` instance.
+
+    Returns:
+        torch.autocast: Autocast context for FP16 on CUDA (no-op on CPU).
+    """
     return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda")
 
 
-def _batch_to_device(batch, device):
+def _batch_to_device(
+    batch: dict[str, Any], device: torch.device
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, list[str]]:
+    """Move a training batch to the target device.
+
+    Extracts and transfers images, all target tensors, cellpose flows, and
+    site-type metadata.
+
+    Args:
+        batch: Dict returned by the PUMADataset.
+        device: Target ``torch.device``.
+
+    Returns:
+        tuple: ``(images, targets_dict, cellpose_flows, site_types)``.
+    """
     images = batch["image"].to(device, non_blocking=True)
     targets = {
         "tissue_sem": batch["tissue_sem"].to(device, non_blocking=True),
@@ -23,7 +52,31 @@ def _batch_to_device(batch, device):
     return images, targets, cellpose_flows, site_types
 
 
-def train_one_epoch(model, dataloader, optimizer, criterion, scheduler, device, scaler, epoch):
+def train_one_epoch(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
+    epoch: int,
+) -> float:
+    """Train the model for a single epoch.
+
+    Args:
+        model: The Stage 1 model to train.
+        dataloader: Training DataLoader.
+        optimizer: Optimizer (AdamW or 8-bit AdamW).
+        criterion: Multi-task loss criterion.
+        scheduler: LR scheduler (stepped per batch).
+        device: Target torch device.
+        scaler: ``GradScaler`` for mixed-precision training.
+        epoch: Current epoch number (used only for logging).
+
+    Returns:
+        float: Average training loss over the epoch.
+    """
     model.train()
     core = model.module if hasattr(model, "module") else model
     if hasattr(core, "encoder") and hasattr(core.encoder, "vit_model"):
@@ -50,7 +103,28 @@ def train_one_epoch(model, dataloader, optimizer, criterion, scheduler, device, 
 
 
 @torch.no_grad()
-def validate(model, dataloader, criterion, metrics_calculator, device, epoch):
+def validate(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    metrics_calculator: PUMAMetrics,
+    device: torch.device,
+    epoch: int,
+) -> dict[str, float]:
+    """Run validation for a single epoch.
+
+    Args:
+        model: The Stage 1 model to evaluate.
+        dataloader: Validation DataLoader.
+        criterion: Multi-task loss criterion.
+        metrics_calculator: ``PUMAMetrics`` instance.
+        device: Target torch device.
+        epoch: Current epoch number (used only for logging).
+
+    Returns:
+        dict: Validation metrics including ``val_loss``, per-branch losses,
+            and all per-class dice/iou scores.
+    """
     model.eval()
     running = 0.0
     metric_sum = {}
