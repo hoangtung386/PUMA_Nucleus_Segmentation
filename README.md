@@ -12,7 +12,7 @@ pip install -e ".[dev]"
 
 Open [`notebooks/train_model.ipynb`](notebooks/train_model.ipynb) for a fully interactive pipeline with:
 - Google Drive mount + git clone + dependency install
-- Automatic GPU VRAM detection and batch-size scaling (A100 80GB → batch 64)
+- Automatic GPU VRAM detection with batch-size and epoch schedule scaling for 4-hour budget (A100 80GB → batch 64/128, 30+20 epochs)
 - Loss schedule visualization, per-class Dice/IoU plots, S1 vs S2 comparison
 - Data leakage prevention verification (group-based split, `val_original_only`)
 - Dry-run / full-run Stage 1 + Stage 2 training with checkpoint verification
@@ -102,6 +102,7 @@ SymbioPan/
 ├── training/                   # Training pipeline
 │   ├── train_loop.py           # Shared train_one_epoch / validate
 │   ├── checkpoint.py           # Safe save/load/extract checkpoint utilities
+│   ├── gpu_setup.py            # GPU detection, config overrides, bf16 patching
 │   ├── logging_utils.py        # Structured logging
 │   ├── cli.py                  # CLI argument parsing
 │   ├── stage1_trainer.py       # Stage 1 training (UnifiedPanopticNet)
@@ -212,20 +213,23 @@ SymbioPan/
 
 ## Google Colab (High-VRAM Setup)
 
-`notebooks/train_model.ipynb` auto-detects available GPU VRAM and scales batch sizes:
+`notebooks/train_model.ipynb` auto-detects available GPU VRAM and scales batch sizes and epoch schedules to fit **within 4 hours total** on Colab Pro (A100 80GB):
 
-| VRAM | Stage 1 batch | Stage 2 batch |
-|------|--------------|--------------|
-| A100 80GB+ (G4) | 64 | 128 |
-| A100 40GB | 32 | 64 |
-| V100 32GB | 16 | 32 |
-| 16GB | 8 | 16 |
+| VRAM | Stage 1 batch | Stage 1 epochs | Stage 2 batch | Stage 2 epochs |
+|------|--------------|----------------|--------------|----------------|
+| A100 80GB+ (G4) | 64 | 30 | 128 | 20 |
+| A100 40GB | 32 | 30 | 64 | 20 |
+| V100 32GB | 16 | 50 | 32 | 30 |
+| 16GB | 8 | 50 | 16 | 30 |
+
+Detection logic in `detect_gpu_setup()` overrides `Stage1Config` and `Stage2Config` defaults when ≥40 GB VRAM is detected, scaling milestones proportionally. For full details, see [`COLAB_TRAINING_GUIDE.md`](COLAB_TRAINING_GUIDE.md).
 
 The notebook also:
 - Enables **bfloat16** mixed precision on Ampere+ GPUs (more stable than float16)
 - Enables **gradient checkpointing** for the UNI ViT encoder
 - Enables **multi-GPU** DataParallel when multiple GPUs are detected
 - Applies `$object.__setattr__` patches to frozen config dataclasses at runtime
+- Saves **entity models** (`torch.save(model, path)`) — no separate state dicts needed
 
 ## Verify Data Leakage Prevention
 
@@ -279,9 +283,9 @@ All training/inference parameters are centralized in `configs/defaults.py` as `@
 
 ## Training CLI Reference
 
-| Flag | Stage 1 | Stage 2 |
-|------|---------|---------|
-| `--epochs` | 50 | 30 |
+| Flag | Stage 1 (default) | Stage 2 (default) |
+|------|-------------------|-------------------|
+| `--epochs` | 50 (30 with 4-hr override) | 30 (20 with 4-hr override) |
 | `--lr` | 1e-4 | 1e-4 |
 | `--batch-size` | 12 | 16 |
 | `--val-ratio` | 0.2 | 0.2 |
@@ -303,6 +307,15 @@ checkpoints/nuclei_refiner_residual_best.pth
 `inference.sh` automatically uses Stage 2 only if `nuclei_refiner_residual_best.pth` exists.
 
 ## Version History
+
+### v7.1 — 4-Hour Colab Pro Training + Code Quality
+- `notebooks/train_model.ipynb` now 86 cells; `detect_gpu_setup()` auto-tunes for 4-hour budget (A100: 30+20 epochs, batch 64/128).
+- **Entity-model saving** (`torch.save(model, path)`) — no separate state dicts for Docker loading.
+- **Full codebase refactoring**: 27 files reformatted via `ruff format`, 0 `ruff check` violations.
+- **117 Google-style docstrings** added across all modules.
+- **`__all__` exports** on all `__init__.py` files.
+- `COLAB_TRAINING_GUIDE.md` with time-budget analysis, troubleshooting FAQ.
+- Fixed code-quality issues: mutable default args, shadow imports, trailing whitespace, dead code aliases.
 
 ### v7 — Training Notebook + Colab Setup
 - Comprehensive `notebooks/train_model.ipynb` with 80 cells covering the full pipeline.
