@@ -1,3 +1,5 @@
+from typing import List, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,7 +8,7 @@ import torch.nn.functional as F
 class SpatialLogitAdjuster(nn.Module):
     """Spatial prior with Version-2.2 shape: 5 tissue classes x 10 nuclei classes."""
 
-    def __init__(self, num_tissue_classes=5, num_nuclei_classes=10):
+    def __init__(self, num_tissue_classes: int = 5, num_nuclei_classes: int = 10) -> None:
         super().__init__()
         if num_tissue_classes != 5:
             raise ValueError("Merged no-background setup requires num_tissue_classes=5")
@@ -14,15 +16,23 @@ class SpatialLogitAdjuster(nn.Module):
         self.register_buffer("metastatic_prior", torch.ones(num_tissue_classes, num_nuclei_classes))
 
     @staticmethod
-    def _normalize_to_log_prior(prior):
+    def _normalize_to_log_prior(prior: torch.Tensor) -> torch.Tensor:
         prior = prior.clamp_min(1e-8)
         return torch.log(prior / prior.sum(dim=1, keepdim=True))
 
-    def forward(self, nuclei_logits, tissue_logits, site_type, lambda_scale):
+    def forward(
+        self,
+        nuclei_logits: torch.Tensor,
+        tissue_logits: torch.Tensor,
+        site_type: Union[str, List[str], Tuple[str, ...]],
+        lambda_scale: float,
+    ) -> torch.Tensor:
         if float(lambda_scale) == 0.0:
             return nuclei_logits
         if tissue_logits.shape[1] != self.primary_prior.shape[0]:
-            raise ValueError(f"Spatial prior expected {self.primary_prior.shape[0]} tissue channels, got {tissue_logits.shape[1]}")
+            raise ValueError(
+                f"Spatial prior expected {self.primary_prior.shape[0]} tissue channels, got {tissue_logits.shape[1]}"
+            )
 
         tissue_probs = F.softmax(tissue_logits, dim=1)
         adjusted = nuclei_logits.clone()
