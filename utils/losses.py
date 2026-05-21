@@ -1,3 +1,5 @@
+from typing import List, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,7 +9,9 @@ from training.logging_utils import logger
 
 
 class SafeCrossEntropyLoss(nn.Module):
-    def __init__(self, weight=None, ignore_index=255):
+    """Cross-entropy loss that safely handles all-ignored targets."""
+
+    def __init__(self, weight: Optional[torch.Tensor] = None, ignore_index: int = 255) -> None:
         super().__init__()
         self.ignore_index = int(ignore_index)
         if weight is None:
@@ -15,7 +19,7 @@ class SafeCrossEntropyLoss(nn.Module):
         else:
             self.register_buffer("weight", weight.float())
 
-    def forward(self, logits, targets):
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         valid = targets != self.ignore_index
         if not torch.any(valid):
             return logits.sum() * 0.0
@@ -36,7 +40,15 @@ class FocalTverskyLoss(nn.Module):
     missing rare objects/classes.
     """
 
-    def __init__(self, alpha=0.3, beta=0.7, gamma=1.25, smooth=1e-5, ignore_index=255, class_weights=None):
+    def __init__(
+        self,
+        alpha: float = 0.3,
+        beta: float = 0.7,
+        gamma: float = 1.25,
+        smooth: float = 1e-5,
+        ignore_index: int = 255,
+        class_weights: Optional[torch.Tensor] = None,
+    ) -> None:
         super().__init__()
         self.alpha = float(alpha)
         self.beta = float(beta)
@@ -48,7 +60,7 @@ class FocalTverskyLoss(nn.Module):
         else:
             self.register_buffer("class_weights", class_weights.float())
 
-    def forward(self, logits, targets):
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         valid = targets != self.ignore_index
         if not torch.any(valid):
             return logits.sum() * 0.0
@@ -76,11 +88,13 @@ class FocalTverskyLoss(nn.Module):
 
 
 class SoftDiceLoss(nn.Module):
-    def __init__(self, smooth=1e-5):
+    """Soft Dice loss for binary segmentation."""
+
+    def __init__(self, smooth: float = 1e-5) -> None:
         super().__init__()
         self.smooth = smooth
 
-    def forward(self, logits, targets):
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits.squeeze(1))
         targets = targets.float()
         if targets.dim() > probs.dim():
@@ -91,12 +105,14 @@ class SoftDiceLoss(nn.Module):
 
 
 class FocalBCELoss(nn.Module):
-    def __init__(self, alpha=0.45, gamma=2.0):
+    """Focal binary cross-entropy loss for binary segmentation."""
+
+    def __init__(self, alpha: float = 0.45, gamma: float = 2.0) -> None:
         super().__init__()
         self.alpha = float(alpha)
         self.gamma = float(gamma)
 
-    def forward(self, logits, targets):
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         logits = logits.squeeze(1)
         targets = targets.float()
         bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
@@ -113,7 +129,13 @@ class MultiTaskUncertaintyLoss(nn.Module):
     targets['nuclei_nc'] must be 0..9 for nuclei and 255 for non-nucleus.
     """
 
-    def __init__(self, tissue_weights=None, nuclei_weights=None, num_tasks=4, ignore_index=255):
+    def __init__(
+        self,
+        tissue_weights: Optional[torch.Tensor] = None,
+        nuclei_weights: Optional[torch.Tensor] = None,
+        num_tasks: int = 4,
+        ignore_index: int = 255,
+    ) -> None:
         super().__init__()
         self.ignore_index = int(ignore_index)
         self.log_vars = nn.Parameter(torch.zeros(num_tasks))
@@ -149,25 +171,20 @@ class MultiTaskUncertaintyLoss(nn.Module):
         self.np_bce = FocalBCELoss(alpha=0.45, gamma=2.0)
         self.np_dice = SoftDiceLoss()
 
-    def set_focal_tversky_weight(self, weight):
-        """Smoothly blend FN-focused FocalTversky into the semantic losses.
-
-        weight=0.0 means CE only.
-        weight=0.5 means CE + 0.5 * FocalTversky.
-        This avoids the abrupt objective jump caused by a binary loss switch.
-        """
+    def set_focal_tversky_weight(self, weight: float) -> None:
         weight = float(weight)
         weight = max(0.0, min(weight, 1.0))
         self.focal_tversky_weight = weight
         self.use_focal_tversky = weight > 0.0
 
-    def switch_to_focal_tversky(self):
-        # Backward-compatible API for older scripts.
+    def switch_to_focal_tversky(self) -> None:
         if not self.use_focal_tversky or self.focal_tversky_weight < 1.0:
             self.set_focal_tversky_weight(1.0)
             logger.info("Switched tissue/nuclei semantic losses to CE + full FN-focused FocalTversky")
 
-    def forward(self, preds, targets):
+    def forward(
+        self, preds: dict[str, torch.Tensor], targets: dict[str, torch.Tensor]
+    ) -> Tuple[torch.Tensor, List[float]]:
         tissue_target = targets["tissue_sem"]
         nuclei_target = targets["nuclei_nc"]
 
@@ -199,6 +216,3 @@ class MultiTaskUncertaintyLoss(nn.Module):
         for i, loss in enumerate(losses):
             total = total + multipliers[i] * (torch.exp(-self.log_vars[i]) * loss + self.log_vars[i])
         return total, [float(x.detach().item()) for x in losses]
-
-
-
