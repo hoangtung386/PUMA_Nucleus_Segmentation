@@ -1,4 +1,5 @@
 import math
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -9,7 +10,9 @@ EPS = 1e-8
 class SemanticMetricAccumulator:
     """Validation-set level Dice/IoU accumulator."""
 
-    def __init__(self, num_classes, prefix, ignore_index=255, device="cpu"):
+    def __init__(
+        self, num_classes: int, prefix: str, ignore_index: int = 255, device: Union[str, torch.device] = "cpu"
+    ) -> None:
         self.num_classes = int(num_classes)
         self.prefix = prefix
         self.ignore_index = int(ignore_index)
@@ -19,7 +22,7 @@ class SemanticMetricAccumulator:
         self.union = torch.zeros(self.num_classes, dtype=torch.float64, device=device)
 
     @torch.no_grad()
-    def update(self, preds, targets):
+    def update(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
         if preds.ndim == targets.ndim + 1:
             pred_labels = torch.argmax(preds, dim=1)
         else:
@@ -35,7 +38,7 @@ class SemanticMetricAccumulator:
             self.target_sum[k] += t.sum(dtype=torch.float64)
             self.union[k] += (p | t).sum(dtype=torch.float64)
 
-    def compute(self):
+    def compute(self) -> Dict[str, float]:
         out = {}
         dice_values = []
         iou_values = []
@@ -67,11 +70,15 @@ class SemanticMetricAccumulator:
 
 
 class PUMAMetrics:
-    def new_semantic_accumulator(self, num_classes, prefix, ignore_index=255, device="cpu"):
+    """Convenience wrapper around semantic metric computation for PUMA tasks."""
+
+    def new_semantic_accumulator(
+        self, num_classes: int, prefix: str, ignore_index: int = 255, device: Union[str, torch.device] = "cpu"
+    ) -> SemanticMetricAccumulator:
         return SemanticMetricAccumulator(num_classes, prefix, ignore_index=ignore_index, device=device)
 
     @staticmethod
-    def _nanmean(values):
+    def _nanmean(values: List[float]) -> float:
         clean = []
         for value in values:
             if value is None:
@@ -82,19 +89,23 @@ class PUMAMetrics:
         return float(np.mean(clean)) if clean else math.nan
 
     @staticmethod
-    def _nan_to_zero(value):
+    def _nan_to_zero(value: Optional[float]) -> float:
         if value is None:
             return 0.0
         value = float(value)
         return 0.0 if math.isnan(value) else value
 
-    def calculate_semantic_metrics(self, logits, targets, num_classes, prefix, ignore_index=255):
+    def calculate_semantic_metrics(
+        self, logits: torch.Tensor, targets: torch.Tensor, num_classes: int, prefix: str, ignore_index: int = 255
+    ) -> Dict[str, float]:
         device = logits.device if torch.is_tensor(logits) else "cpu"
         acc = self.new_semantic_accumulator(num_classes, prefix, ignore_index=ignore_index, device=device)
         acc.update(logits, targets)
         return acc.compute()
 
-    def calculate_all_metrics(self, preds, targets):
+    def calculate_all_metrics(
+        self, preds: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]
+    ) -> Dict[str, float]:
         out = {}
         out.update(self.calculate_semantic_metrics(preds["tissue"], targets["tissue_sem"], 5, "tissue"))
         out.update(self.calculate_semantic_metrics(preds["nc"], targets["nuclei_nc"], 10, "nuclei"))
@@ -121,8 +132,6 @@ class PUMAMetrics:
         # Rare-focused checkpoint selection. This intentionally gives rare classes
         # the largest weight, because common tumor/stroma/lymphocyte already learn well.
         out["selection_score"] = (
-            0.20 * out["avg_tissue_dice"]
-            + 0.25 * out["avg_nuclei_dice"]
-            + 0.55 * out["rare_macro_dice"]
+            0.20 * out["avg_tissue_dice"] + 0.25 * out["avg_nuclei_dice"] + 0.55 * out["rare_macro_dice"]
         )
         return out
