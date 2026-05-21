@@ -314,37 +314,37 @@ def main():
         results["keep_lambda"] = keep_lambda
         print_report(epoch, avg_train_loss, avg_val_loss, results)
 
-        ckpt_payload = {
-            "model_state": model_s2.state_dict(),
-            "epoch": epoch,
+        s2_config = {
+            "in_channels": cfg.stage2_in_channels,
+            "out_classes": cfg.num_nuclei_classes,
+            "residual": True,
             "alpha": alpha,
             "keep_lambda": keep_lambda,
-            "selection_score": results["selection_score"],
-            "improvement_score": results["improvement_score"],
-            "beats_stage1": results["beats_stage1"],
-            "config": {
-                "in_channels": cfg.stage2_in_channels,
-                "out_classes": cfg.num_nuclei_classes,
-                "residual": True,
-                "alpha_start": cfg.alpha_start,
-                "alpha_end": cfg.alpha_end,
-                "alpha_warmup_epochs": cfg.alpha_warmup_epochs,
-                "kd_temperature": cfg.kd_temperature,
-                "keep_lambda_start": cfg.keep_lambda_start,
-                "keep_lambda_end": cfg.keep_lambda_end,
-                "nuclei_weights": cfg.nuclei_weights,
-                "rare_nuclei_ids": cfg.rare_nuclei_ids,
-                "uses_5_tissue_probs_no_background": True,
-                "stage2_input_channels": cfg.stage2_in_channels,
-                "split_is_group_based": True,
-                "validation_original_only": cfg.val_original_only,
-            },
+            "alpha_start": cfg.alpha_start,
+            "alpha_end": cfg.alpha_end,
+            "alpha_warmup_epochs": cfg.alpha_warmup_epochs,
+            "kd_temperature": cfg.kd_temperature,
+            "keep_lambda_start": cfg.keep_lambda_start,
+            "keep_lambda_end": cfg.keep_lambda_end,
+            "nuclei_weights": cfg.nuclei_weights,
+            "rare_nuclei_ids": cfg.rare_nuclei_ids,
+            "uses_5_tissue_probs_no_background": True,
+            "stage2_input_channels": cfg.stage2_in_channels,
+            "split_is_group_based": True,
+            "validation_original_only": cfg.val_original_only,
         }
 
         if epoch % 5 == 0 or epoch == cfg.epochs:
             last_path = PATHS.checkpoint_dir / "nuclei_refiner_residual_last.pth"
-            safe_torch_save(ckpt_payload, last_path)
-            safe_torch_save_entity(model_s2, last_path.with_name(last_path.stem + "_full" + last_path.suffix))
+            model_s2._metadata = {
+                "epoch": epoch,
+                "selection_score": results["selection_score"],
+                "improvement_score": results["improvement_score"],
+                "beats_stage1": results["beats_stage1"],
+                "config": s2_config,
+            }
+            safe_torch_save_entity(model_s2, last_path)
+            logger.info("Entity model saved: %s | epoch=%d", last_path, epoch)
 
         score = float(results["selection_score"])
         if score > best_score:
@@ -352,8 +352,14 @@ def main():
             best_epoch = epoch
             best_improvement = float(results["improvement_score"])
             best_path = PATHS.checkpoint_dir / "nuclei_refiner_residual_best.pth"
-            safe_torch_save(ckpt_payload, best_path)
-            safe_torch_save_entity(model_s2, best_path.with_name(best_path.stem + "_full" + best_path.suffix))
+            model_s2._metadata = {
+                "epoch": epoch,
+                "selection_score": score,
+                "improvement_score": best_improvement,
+                "beats_stage1": results["beats_stage1"],
+                "config": s2_config,
+            }
+            safe_torch_save_entity(model_s2, best_path)
             logger.info("Saved Stage 2 best: epoch=%d score=%.4f improvement=%+.4f", best_epoch, best_score, best_improvement)
 
         if not results["beats_stage1"]:

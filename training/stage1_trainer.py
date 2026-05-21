@@ -25,7 +25,7 @@ from data.constants import (
 )
 from data.dataset import PUMADataset, get_train_transforms, get_val_transforms
 from models import UnifiedPanopticNet, build_cnn_backbone
-from training import safe_torch_save, safe_torch_save_entity
+from training import extract_state_dict, safe_torch_save_entity
 from training.logging_utils import logger
 from training.train_loop import train_one_epoch, validate
 from utils import MultiTaskUncertaintyLoss, PUMAMetrics
@@ -68,20 +68,14 @@ def make_inference_config(core_model):
 
 def save_checkpoint(path, model, criterion, optimizer, scheduler, scaler, epoch, best_score, val_report):
     core = model.module if hasattr(model, "module") else model
-    payload = {
+    core._metadata = {
         "epoch": int(epoch),
-        "model_state": core.state_dict(),
-        "criterion_state": criterion.state_dict(),
-        "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
-        "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
-        "scaler_state": scaler.state_dict() if scaler is not None else None,
         "best_score": float(best_score),
         "best_val_report": val_report,
         "inference_config": make_inference_config(core),
     }
-    safe_torch_save(payload, path)
-    entity_path = path.with_name(path.stem + "_full" + path.suffix)
-    safe_torch_save_entity(core, entity_path)
+    safe_torch_save_entity(core, path)
+    logger.info("Entity model saved: %s | epoch=%d score=%.4f", path, epoch, best_score)
 
 
 def make_rare_weighted_sampler(dataset, indices):
@@ -236,26 +230,16 @@ def main():
         resume_path = Path(cfg.resume)
         if resume_path.is_file():
             logger.info("Resuming from checkpoint: %s", resume_path)
-            checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
+            obj = torch.load(resume_path, map_location=device, weights_only=False)
 
             core = model.module if hasattr(model, "module") else model
-            core.load_state_dict(checkpoint["model_state"])
+            sd = obj if isinstance(obj, dict) else obj.state_dict()
+            core.load_state_dict(extract_state_dict(sd))
 
-            if "criterion_state" in checkpoint and checkpoint["criterion_state"] is not None:
-                criterion.load_state_dict(checkpoint["criterion_state"], strict=False)
-
-            if "optimizer_state" in checkpoint and checkpoint["optimizer_state"] is not None:
-                optimizer.load_state_dict(checkpoint["optimizer_state"])
-
-            if "scheduler_state" in checkpoint and checkpoint["scheduler_state"] is not None:
-                scheduler.load_state_dict(checkpoint["scheduler_state"])
-
-            if "scaler_state" in checkpoint and checkpoint["scaler_state"] is not None:
-                scaler.load_state_dict(checkpoint["scaler_state"])
-
-            start_epoch = checkpoint["epoch"] + 1
-            best_score = checkpoint.get("best_score", -1.0)
-            best_val_report = checkpoint.get("best_val_report", None)
+            metadata = obj._metadata if isinstance(obj, torch.nn.Module) and hasattr(obj, "_metadata") else obj if isinstance(obj, dict) else {}
+            start_epoch = metadata.get("epoch", 0) + 1 if isinstance(metadata, dict) else 1
+            best_score = metadata.get("best_score", -1.0) if isinstance(metadata, dict) else -1.0
+            best_val_report = metadata.get("best_val_report", None) if isinstance(metadata, dict) else None
 
             logger.info("Resumed successfully. Starting from epoch %d, current best score: %.4f", start_epoch, best_score)
         else:

@@ -47,8 +47,15 @@ def load_large_checkpoint(path: str | Path, device: str | torch.device = "cpu") 
     return torch.load(str(path), map_location=device, weights_only=False)
 
 
-def extract_state_dict(checkpoint: dict) -> dict:
-    """Extract model state dict from various checkpoint formats."""
+def extract_state_dict(checkpoint) -> dict:
+    """Extract model state dict from various checkpoint formats.
+    
+    Supports:
+    - ``dict`` with keys ``model_state``, ``model_state_dict``, ``state_dict``, or ``model``
+    - ``nn.Module`` (entity model) — returns ``model.state_dict()``
+    """
+    if isinstance(checkpoint, torch.nn.Module):
+        return {k.removeprefix("module."): v for k, v in checkpoint.state_dict().items()}
     if isinstance(checkpoint, dict):
         for key in ["model_state", "model_state_dict", "state_dict", "model"]:
             if key in checkpoint and isinstance(checkpoint[key], dict):
