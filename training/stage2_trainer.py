@@ -1,6 +1,7 @@
 """Rare-focused Stage 2 residual nuclei refiner training."""
 
 import math
+import os
 
 import numpy as np
 import torch
@@ -143,11 +144,12 @@ def _build_loader(dataset, indices, sampler=None):
         pin_memory=True,
         drop_last=sampler is not None,
         persistent_workers=cfg.num_workers > 0,
-        prefetch_factor=3 if cfg.num_workers > 0 else 2,
+        prefetch_factor=2 if cfg.num_workers > 0 else 2,
     )
 
 
 def main():
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     device = get_device()
