@@ -1,5 +1,7 @@
 """Configuration serialization utilities."""
 
+from typing import Any
+
 from configs.defaults import Stage1Config
 from data.constants import (
     INTERNAL_TISSUE_ID_TO_NAME,
@@ -9,7 +11,7 @@ from data.constants import (
 )
 
 
-def make_inference_config_from_stage1(stage1_config: Stage1Config, core_model) -> dict:
+def make_inference_config_from_stage1(stage1_config: Stage1Config, core_model: Any) -> dict[str, Any]:
     """Convert Stage1Config + model state to inference-compatible dictionary."""
     return {
         "architecture": "merged_v22_architecture_v4_labels_no_tissue_background_rare_focused",
