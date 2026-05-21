@@ -124,17 +124,48 @@ def print_report(epoch, train_loss, val):
     logger.info("=" * 88)
 
 
+def _optimize_gpu():
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
+    logger.info("GPU optimizations: cudnn.benchmark=True tf32=True matmul_precision=high")
+
+
+def _enable_grad_ckpt(model):
+    core = model.module if hasattr(model, "module") else model
+    if hasattr(core, "encoder") and hasattr(core.encoder, "vit_model"):
+        vit = core.encoder.vit_model
+        if hasattr(vit, "gradient_checkpointing_enable"):
+            vit.gradient_checkpointing_enable()
+            logger.info("ViT gradient checkpointing enabled.")
+
+
+def _build_loader(dataset, indices, sampler=None):
+    return DataLoader(
+        Subset(dataset, indices),
+        batch_size=cfg.batch_size,
+        sampler=sampler,
+        shuffle=sampler is None,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        drop_last=sampler is not None,
+        persistent_workers=cfg.num_workers > 0,
+        prefetch_factor=3 if cfg.num_workers > 0 else 2,
+    )
+
+
 def main():
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     device = get_device()
-    torch.backends.cudnn.benchmark = True
+    _optimize_gpu()
     PATHS.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Root: %s", PATHS.root)
     logger.info("Data: %s", PATHS.data_dir)
     logger.info("Checkpoints: %s", PATHS.checkpoint_dir)
-    logger.info("Config: batch_size=%d epochs=%d zero_cellpose_prob=%.2f", cfg.batch_size, cfg.epochs, cfg.zero_cellpose_prob)
+    logger.info("Config: batch_size=%d epochs=%d num_workers=%d zero_cellpose_prob=%.2f",
+                cfg.batch_size, cfg.epochs, cfg.num_workers, cfg.zero_cellpose_prob)
 
     train_ds = PUMADataset(
         PATHS.data_dir,
@@ -160,22 +191,8 @@ def main():
     logger.info("Split: train=%d val=%d file=%s", len(train_idx), len(val_idx), PATHS.split_file)
     logger.info("Split: Leakage-safe; validation uses originals only")
 
-    train_loader = DataLoader(
-        Subset(train_ds, train_idx),
-        batch_size=cfg.batch_size,
-        sampler=make_rare_weighted_sampler(train_ds, train_idx),
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
-    val_loader = DataLoader(
-        Subset(val_ds, val_idx),
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
+    train_loader = _build_loader(train_ds, train_idx, sampler=make_rare_weighted_sampler(train_ds, train_idx))
+    val_loader = _build_loader(val_ds, val_idx)
 
     cnn = build_cnn_backbone(pretrained=True)
     model = UnifiedPanopticNet(
@@ -185,6 +202,7 @@ def main():
         num_nuclei=NUM_NUCLEI_CLASSES,
         load_uni_weights=True,
     ).to(device)
+    _enable_grad_ckpt(model)
 
     if cfg.multi_gpu and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)

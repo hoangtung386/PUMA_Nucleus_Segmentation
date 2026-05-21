@@ -24,11 +24,16 @@ def safe_torch_save_entity(model: torch.nn.Module, path: str | Path) -> None:
     The saved file contains the complete model object, so loading only requires
     ``torch.load(path, map_location='cpu', weights_only=False)`` — no need to
     manually reconstruct the architecture.
+
+    IMPORTANT: Saves a CPU copy without moving the original model from its device.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    torch.save(model.to("cpu"), str(tmp))
+    orig_device = next(model.parameters()).device
+    model.to("cpu")
+    torch.save(model, str(tmp))
+    model.to(orig_device)
     _ = torch.load(str(tmp), map_location="cpu", weights_only=False)
     tmp.replace(path)
     logger.info("Entity model saved and verified: %s", path)

@@ -127,11 +127,31 @@ def print_report(epoch, train_loss, val_loss, results):
     logger.info("=" * 92)
 
 
+def _optimize_gpu():
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
+
+
+def _build_loader(dataset, indices, sampler=None):
+    return DataLoader(
+        Subset(dataset, indices),
+        batch_size=cfg.batch_size,
+        sampler=sampler,
+        shuffle=sampler is None,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        drop_last=sampler is not None,
+        persistent_workers=cfg.num_workers > 0,
+        prefetch_factor=3 if cfg.num_workers > 0 else 2,
+    )
+
+
 def main():
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     device = get_device()
-    torch.backends.cudnn.benchmark = True
+    _optimize_gpu()
     PATHS.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     stage1_ckpt_path = PATHS.checkpoint_dir / "puma_epoch_best_s1.pth"
@@ -140,6 +160,8 @@ def main():
     logger.info("Data: %s", PATHS.data_dir)
     logger.info("Stage 1 checkpoint: %s", stage1_ckpt_path)
     logger.info("Checkpoints: %s", PATHS.checkpoint_dir)
+    logger.info("Config: batch_size=%d epochs=%d num_workers=%d",
+                cfg.batch_size, cfg.epochs, cfg.num_workers)
 
     train_ds = PUMADataset(PATHS.data_dir, transforms=get_train_transforms(cfg.image_size), zero_cellpose_prob=0.0)
     val_ds = PUMADataset(PATHS.data_dir, transforms=get_val_transforms(cfg.image_size), zero_cellpose_prob=0.0)
@@ -157,22 +179,8 @@ def main():
     logger.info("Split: train=%d val=%d file=%s", len(train_idx), len(val_idx), PATHS.split_file)
     logger.info("Split: Leakage-safe; validation uses originals only")
 
-    train_loader = DataLoader(
-        Subset(train_ds, train_idx),
-        batch_size=cfg.batch_size,
-        sampler=make_rare_weighted_sampler(train_ds, train_idx),
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
-    val_loader = DataLoader(
-        Subset(val_ds, val_idx),
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
+    train_loader = _build_loader(train_ds, train_idx, sampler=make_rare_weighted_sampler(train_ds, train_idx))
+    val_loader = _build_loader(val_ds, val_idx)
 
     model_s1 = UnifiedPanopticNet(
         vit_model=PATHS.uni_weight_dir,

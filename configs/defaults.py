@@ -72,7 +72,7 @@ class Stage1Config:
     samples_per_epoch_multiplier: float = 1.0
     multi_gpu: bool = False
     use_fp16: bool = True
-    resume: str | None = "checkpoints/puma_epoch_last_s1.pth"
+    resume: str | None = None
 
     tissue_class_weights: tuple = field(default_factory=lambda: tuple(TISSUE_CLASS_WEIGHTS))
     nuclei_class_weights: tuple = field(default_factory=lambda: tuple(NUCLEI_CLASS_WEIGHTS))
