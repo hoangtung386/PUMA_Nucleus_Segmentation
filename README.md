@@ -12,7 +12,7 @@ pip install -e ".[dev]"
 
 Open [`notebooks/train_model.ipynb`](notebooks/train_model.ipynb) for a fully interactive pipeline with:
 - Google Drive mount + git clone + dependency install
-- Automatic GPU VRAM detection with batch-size and epoch schedule scaling for 4-hour budget (A6000 96GB → batch 14/28, 30+20 epochs)
+- Automatic GPU VRAM detection with batch-size and epoch schedule scaling for 4-hour budget (A6000 96GB → batch 12/24, 30+20 epochs)
 - Loss schedule visualization, per-class Dice/IoU plots, S1 vs S2 comparison
 - Data leakage prevention verification (group-based split, `val_original_only`)
 - Dry-run / full-run Stage 1 + Stage 2 training with checkpoint verification
@@ -240,11 +240,11 @@ SymbioPan/
 
 | VRAM | Stage 1 batch | Stage 1 epochs | Stage 2 batch | Stage 2 epochs |
 |------|--------------|----------------|--------------|----------------|
-| A6000 96GB+ (G4) | 14 | 30 | 28 | 20 |
-| A100 80GB | 14 | 30 | 28 | 20 |
-| A100 40GB | 10 | 30 | 20 | 20 |
-| V100 32GB | 6 | 50 | 12 | 30 |
-| 16GB | 4 | 50 | 8 | 30 |
+| A6000 96GB+ (G4) | 12 | 30 | 24 | 20 |
+| A100 80GB | 12 | 30 | 24 | 20 |
+| A100 40GB | 8 | 30 | 16 | 20 |
+| V100 32GB | 4 | 50 | 8 | 30 |
+| 16GB | 2 | 50 | 4 | 30 |
 
 Detection logic in `detect_gpu_setup()` overrides `Stage1Config` and `Stage2Config` defaults when ≥40 GB VRAM is detected, scaling milestones proportionally. For full details, see [`COLAB_TRAINING_GUIDE.md`](COLAB_TRAINING_GUIDE.md).
 
