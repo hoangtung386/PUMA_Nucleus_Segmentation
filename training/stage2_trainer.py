@@ -2,12 +2,13 @@
 
 import math
 import os
+from typing import Any
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
+from torch.utils.data import DataLoader, Sampler, Subset, WeightedRandomSampler
 from tqdm import tqdm
 
 try:
@@ -25,7 +26,7 @@ from models import (
     build_cnn_backbone,
     build_stage2_input,
 )
-from training.checkpoint import extract_state_dict, load_large_checkpoint, safe_torch_save, safe_torch_save_entity
+from training.checkpoint import extract_state_dict, load_large_checkpoint, safe_torch_save_entity
 from training.logging_utils import logger
 from utils import PUMAMetrics
 from utils.losses import FocalTverskyLoss, SafeCrossEntropyLoss
@@ -34,32 +35,91 @@ from utils.split_utils import make_or_load_group_split
 cfg = STAGE2_DEFAULT_CONFIG
 
 
-def alpha_schedule(epoch):
+def alpha_schedule(epoch: int) -> float:
+    """Compute the residual blending weight at a given epoch.
+
+    The weight linearly ramps from ``alpha_start`` to ``alpha_start + alpha_end``
+    over the warmup period, then stays constant.
+
+    Args:
+        epoch: Current epoch (1-indexed).
+
+    Returns:
+        float: Alpha value for this epoch.
+    """
     return linear_ramp(epoch, 0, cfg.alpha_warmup_epochs, cfg.alpha_end) + cfg.alpha_start
 
 
-def keep_lambda_schedule(epoch):
-    return linear_ramp(epoch, 0, cfg.keep_lambda_decay_epochs, cfg.keep_lambda_end - cfg.keep_lambda_start) + cfg.keep_lambda_start
+def keep_lambda_schedule(epoch: int) -> float:
+    """Compute the KL-preservation loss weight at a given epoch.
+
+    The weight linearly decays from ``keep_lambda_start`` to ``keep_lambda_end``
+    over the decay period.
+
+    Args:
+        epoch: Current epoch (1-indexed).
+
+    Returns:
+        float: Keep-lambda value for this epoch.
+    """
+    return (
+        linear_ramp(epoch, 0, cfg.keep_lambda_decay_epochs, cfg.keep_lambda_end - cfg.keep_lambda_start)
+        + cfg.keep_lambda_start
+    )
 
 
-def masked_kl_preservation_loss(refined_logits, s1_logits, targets, temperature=2.0, ignore_index=255):
+def masked_kl_preservation_loss(
+    refined_logits: torch.Tensor,
+    s1_logits: torch.Tensor,
+    targets: torch.Tensor,
+    temperature: float = 2.0,
+    ignore_index: int = 255,
+) -> torch.Tensor:
+    """Compute KL divergence between Stage 2 refined and Stage 1 logits.
+
+    Only pixels with a valid label (not equal to ``ignore_index``) contribute
+    to the loss.  The KL is computed with a temperature-scaled softmax.
+
+    Args:
+        refined_logits: Stage 2 refined logits ``(B, C, H, W)``.
+        s1_logits: Frozen Stage 1 logits ``(B, C, H, W)``.
+        targets: Ground-truth labels ``(B, H, W)`` (used for masking).
+        temperature: Softmax temperature (default 2.0).
+        ignore_index: Label value to ignore (default 255).
+
+    Returns:
+        torch.Tensor: Scalar KL loss.
+    """
     valid = targets != ignore_index
     if not torch.any(valid):
         return refined_logits.sum() * 0.0
     log_p_refined = F.log_softmax(refined_logits / temperature, dim=1)
     p_s1 = F.softmax(s1_logits.detach() / temperature, dim=1)
     kl = F.kl_div(log_p_refined, p_s1, reduction="none").sum(dim=1)
-    return kl[valid].mean() * (temperature ** 2)
+    return kl[valid].mean() * (temperature**2)
 
 
-def make_rare_weighted_sampler(dataset, indices):
+def make_rare_weighted_sampler(dataset: PUMADataset, indices: list[int]) -> WeightedRandomSampler:
+    """Build a ``WeightedRandomSampler`` biased toward rare nuclei classes.
+
+    Args:
+        dataset: The PUMADataset used to compute per-sample weights.
+        indices: Subset indices to build the sampler over.
+
+    Returns:
+        WeightedRandomSampler: Sampler configured with rare-class bias.
+    """
     weights = np.asarray(dataset.compute_sample_weights(indices), dtype=np.float64)
     weights = np.clip(weights, 1.0, cfg.max_sample_weight)
     num_samples = int(round(len(indices) * cfg.samples_per_epoch_multiplier))
     num_samples = max(num_samples, len(indices))
     logger.info(
         "Sampler Stage 2 rare weighted sampler: n_indices=%d num_samples=%d min_w=%.2f mean_w=%.2f max_w=%.2f",
-        len(indices), num_samples, weights.min(), weights.mean(), weights.max(),
+        len(indices),
+        num_samples,
+        weights.min(),
+        weights.mean(),
+        weights.max(),
     )
     return WeightedRandomSampler(
         weights=torch.as_tensor(weights, dtype=torch.double),
@@ -68,7 +128,25 @@ def make_rare_weighted_sampler(dataset, indices):
     )
 
 
-def compute_stage2_scores(metrics_calc, s1_metrics, s2_metrics):
+def compute_stage2_scores(
+    metrics_calc: PUMAMetrics,
+    s1_metrics: dict[str, float],
+    s2_metrics: dict[str, float],
+) -> dict[str, Any]:
+    """Compare Stage 1 and Stage 2 nuclei segmentation metrics.
+
+    Computes per-class dice/iou, macro averages, rare-class averages, a
+    selection score, and an improvement-over-Stage-1 score.
+
+    Args:
+        metrics_calc: ``PUMAMetrics`` instance (used for nan-mean helpers).
+        s1_metrics: Stage 1 metrics dict (keys like ``s1_nuclei_dice_{k}``).
+        s2_metrics: Stage 2 metrics dict (keys like ``s2_nuclei_dice_{k}``).
+
+    Returns:
+        dict: Aggregated scores including ``selection_score``,
+            ``improvement_score``, and ``beats_stage1``.
+    """
     out = {}
     s1_dice = []
     s2_dice = []
@@ -98,13 +176,25 @@ def compute_stage2_scores(metrics_calc, s1_metrics, s2_metrics):
     out["s2_macro_dice"] = s2_macro
     out["s1_rare_macro_dice"] = s1_rare_macro
     out["s2_rare_macro_dice"] = s2_rare_macro
-    out["selection_score"] = 0.25 * metrics_calc._nan_to_zero(s2_macro) + 0.75 * metrics_calc._nan_to_zero(s2_rare_macro)
-    out["improvement_score"] = 0.25 * (metrics_calc._nan_to_zero(s2_macro) - metrics_calc._nan_to_zero(s1_macro)) + 0.75 * (metrics_calc._nan_to_zero(s2_rare_macro) - metrics_calc._nan_to_zero(s1_rare_macro))
+    out["selection_score"] = 0.25 * metrics_calc._nan_to_zero(s2_macro) + 0.75 * metrics_calc._nan_to_zero(
+        s2_rare_macro
+    )
+    out["improvement_score"] = 0.25 * (
+        metrics_calc._nan_to_zero(s2_macro) - metrics_calc._nan_to_zero(s1_macro)
+    ) + 0.75 * (metrics_calc._nan_to_zero(s2_rare_macro) - metrics_calc._nan_to_zero(s1_rare_macro))
     out["beats_stage1"] = out["improvement_score"] > 0.0
     return out
 
 
-def fmt(v):
+def fmt(v: Any) -> str:
+    """Format a numeric value as a 4-decimal string, or ``"N/A"`` on failure.
+
+    Args:
+        v: Value to format (any type convertible to float).
+
+    Returns:
+        str: Formatted string or ``"N/A"``.
+    """
     try:
         v = float(v)
     except Exception:
@@ -112,29 +202,70 @@ def fmt(v):
     return "N/A" if math.isnan(v) else f"{v:.4f}"
 
 
-def print_report(epoch, train_loss, val_loss, results):
+def print_report(epoch: int, train_loss: float, val_loss: float, results: dict) -> None:
+    """Log a detailed per-epoch Stage 2 report comparing S1 vs S2 per-class dice.
+
+    Args:
+        epoch: Current epoch number.
+        train_loss: Average training loss for the epoch.
+        val_loss: Average validation loss for the epoch.
+        results: Metrics dict returned by :func:`compute_stage2_scores`.
+    """
     logger.info("=" * 92)
-    logger.info("Stage 2 epoch %03d | train=%.4f val=%.4f alpha=%.3f keep=%.3f", epoch, train_loss, val_loss, results["alpha"], results["keep_lambda"])
+    logger.info(
+        "Stage 2 epoch %03d | train=%.4f val=%.4f alpha=%.3f keep=%.3f",
+        epoch,
+        train_loss,
+        val_loss,
+        results["alpha"],
+        results["keep_lambda"],
+    )
     logger.info("-" * 92)
     for k in range(cfg.num_nuclei_classes):
         name = PUMA_NUCLEI_ID_TO_NAME[k]
         s1 = results.get(f"s1_nuclei_dice_{k}")
         s2 = results.get(f"s2_nuclei_dice_{k}")
-        delta = math.nan if s1 is None or s2 is None or math.isnan(float(s1)) or math.isnan(float(s2)) else float(s2) - float(s1)
+        delta = (
+            math.nan
+            if s1 is None or s2 is None or math.isnan(float(s1)) or math.isnan(float(s2))
+            else float(s2) - float(s1)
+        )
         logger.info("%02d %-22s S1=%-8s S2=%-8s Delta=%-8s", k, name, fmt(s1), fmt(s2), fmt(delta))
     logger.info("S1 macro=%s | S2 macro=%s", fmt(results.get("s1_macro_dice")), fmt(results.get("s2_macro_dice")))
-    logger.info("S1 rare =%s | S2 rare =%s", fmt(results.get("s1_rare_macro_dice")), fmt(results.get("s2_rare_macro_dice")))
-    logger.info("selection=%s improvement=%s beats_stage1=%s", fmt(results.get("selection_score")), fmt(results.get("improvement_score")), results.get("beats_stage1"))
+    logger.info(
+        "S1 rare =%s | S2 rare =%s", fmt(results.get("s1_rare_macro_dice")), fmt(results.get("s2_rare_macro_dice"))
+    )
+    logger.info(
+        "selection=%s improvement=%s beats_stage1=%s",
+        fmt(results.get("selection_score")),
+        fmt(results.get("improvement_score")),
+        results.get("beats_stage1"),
+    )
     logger.info("=" * 92)
 
 
-def _optimize_gpu():
+def _optimize_gpu() -> None:
+    """Enable CUDA performance optimisations (cudnn benchmark, TF32, matmul precision)."""
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.allow_tf32 = True
-    torch.set_float32_matmul_precision('high')
+    torch.set_float32_matmul_precision("high")
 
 
-def _build_loader(dataset, indices, sampler=None):
+def _build_loader(
+    dataset: PUMADataset,
+    indices: list[int],
+    sampler: Sampler | None = None,
+) -> DataLoader:
+    """Build a DataLoader over a subset of the dataset.
+
+    Args:
+        dataset: Full PUMADataset instance.
+        indices: Subset indices to iterate over.
+        sampler: Optional sampler (e.g. WeightedRandomSampler).
+
+    Returns:
+        DataLoader: Configured DataLoader with Stage 2 settings.
+    """
     return DataLoader(
         Subset(dataset, indices),
         batch_size=cfg.batch_size,
@@ -148,7 +279,19 @@ def _build_loader(dataset, indices, sampler=None):
     )
 
 
-def main():
+def main() -> None:
+    """Run the full Stage 2 training pipeline for ResidualNucleiRefinerUNet.
+
+    Pipeline steps:
+        1. Seed RNGs, detect device, enable GPU optimisations.
+        2. Load PUMA datasets and leak-safe group split.
+        3. Load frozen Stage 1 UnifiedPanopticNet (weights + inference config).
+        4. Build ResidualNucleiRefinerUNet with residual delta predictions.
+        5. Configure CrossEntropy, FocalTversky, and KL-preservation losses.
+        6. Loop over epochs: compute alpha/keep-lambda schedules, train S2,
+           validate with frozen S1 features, compute comparison scores,
+           print report, save best & last checkpoints.
+    """
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -162,8 +305,7 @@ def main():
     logger.info("Data: %s", PATHS.data_dir)
     logger.info("Stage 1 checkpoint: %s", stage1_ckpt_path)
     logger.info("Checkpoints: %s", PATHS.checkpoint_dir)
-    logger.info("Config: batch_size=%d epochs=%d num_workers=%d",
-                cfg.batch_size, cfg.epochs, cfg.num_workers)
+    logger.info("Config: batch_size=%d epochs=%d num_workers=%d", cfg.batch_size, cfg.epochs, cfg.num_workers)
 
     train_ds = PUMADataset(PATHS.data_dir, transforms=get_train_transforms(cfg.image_size), zero_cellpose_prob=0.0)
     val_ds = PUMADataset(PATHS.data_dir, transforms=get_val_transforms(cfg.image_size), zero_cellpose_prob=0.0)
@@ -234,7 +376,9 @@ def main():
     best_improvement = -999.0
 
     if cfg.resume is not None:
-        logger.warning("Resume path is set to %s, but resume is not fully implemented in click-to-run mode.", cfg.resume)
+        logger.warning(
+            "Resume path is set to %s, but resume is not fully implemented in click-to-run mode.", cfg.resume
+        )
 
     for epoch in range(1, cfg.epochs + 1):
         alpha = alpha_schedule(epoch)
@@ -279,8 +423,12 @@ def main():
 
         model_s2.eval()
         val_loss_sum = 0.0
-        s1_acc = metrics_calc.new_semantic_accumulator(cfg.num_nuclei_classes, "s1_nuclei", ignore_index=cfg.ignore_index, device=device)
-        s2_acc = metrics_calc.new_semantic_accumulator(cfg.num_nuclei_classes, "s2_nuclei", ignore_index=cfg.ignore_index, device=device)
+        s1_acc = metrics_calc.new_semantic_accumulator(
+            cfg.num_nuclei_classes, "s1_nuclei", ignore_index=cfg.ignore_index, device=device
+        )
+        s2_acc = metrics_calc.new_semantic_accumulator(
+            cfg.num_nuclei_classes, "s2_nuclei", ignore_index=cfg.ignore_index, device=device
+        )
 
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Valid Stage2 {epoch:03d}", leave=False):
@@ -362,10 +510,15 @@ def main():
                 "config": s2_config,
             }
             safe_torch_save_entity(model_s2, best_path)
-            logger.info("Saved Stage 2 best: epoch=%d score=%.4f improvement=%+.4f", best_epoch, best_score, best_improvement)
+            logger.info(
+                "Saved Stage 2 best: epoch=%d score=%.4f improvement=%+.4f", best_epoch, best_score, best_improvement
+            )
 
         if not results["beats_stage1"]:
-            logger.warning("Stage 2 has not beaten Stage 1 yet. For Docker inference, prefer Stage 1-only or validate hybrid before enabling Stage 2.")
+            logger.warning(
+                "Stage 2 has not beaten Stage 1 yet. "
+                "For Docker inference, prefer Stage 1-only or validate hybrid before enabling Stage 2."
+            )
 
     logger.info("=" * 92)
     logger.info("Stage 2 complete. Best epoch: %d", best_epoch)
