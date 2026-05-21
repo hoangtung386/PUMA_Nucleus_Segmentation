@@ -38,22 +38,25 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> None:
     peak_vram = max(vram_gb)
     print(f"\nDetected: {num_gpus} GPU(s), total VRAM = {total_vram:.1f} GB")
 
+    # Enable expandable segments to reduce fragmentation on large-VRAM GPUs
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+
     if force_batch_size is not None:
         bs = force_batch_size
     elif peak_vram >= 75:
-        bs = 64
-    elif peak_vram >= 40:
         bs = 32
+    elif peak_vram >= 40:
+        bs = 24
     elif peak_vram >= 16:
-        bs = 16
+        bs = 12
     else:
-        bs = 8
+        bs = 6
 
     if num_gpus > 1:
         bs = bs * num_gpus
 
     cpu_count = os.cpu_count() or 4
-    n_workers = min(8, cpu_count)
+    n_workers = min(4, cpu_count)
 
     print(f"  -> Stage 1 batch_size = {bs}")
     print(f"  -> Stage 2 batch_size = {min(bs * 2, 128)}")
