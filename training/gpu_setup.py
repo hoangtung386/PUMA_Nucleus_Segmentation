@@ -44,13 +44,13 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> None:
     if force_batch_size is not None:
         bs = force_batch_size
     elif peak_vram >= 75:
-        bs = 32
+        bs = 14
     elif peak_vram >= 40:
-        bs = 24
+        bs = 10
     elif peak_vram >= 16:
-        bs = 12
-    else:
         bs = 6
+    else:
+        bs = 4
 
     if num_gpus > 1:
         bs = bs * num_gpus
