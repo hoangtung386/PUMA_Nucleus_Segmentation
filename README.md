@@ -77,21 +77,36 @@ python -m pytest tests/
 
 ```
 SymbioPan/
+├── COLAB_TRAINING_GUIDE.md      # 4-hour Colab Pro training guide
+├── README.md                    # This file
+├── requirements.txt             # Python dependencies
+├── pyproject.toml               # Project metadata + tooling config
+├── .gitignore
+├── Dockerfile                   # Multi-stage Docker build for Grand Challenge
+├── Makefile                     # Common targets
+├── inference.sh                 # Docker entrypoint
+│
 ├── configs/                    # Centralized configuration (dataclass-based)
-│   ├── __init__.py
+│   ├── __init__.py             # Re-exports all config classes
 │   ├── defaults.py             # All hyperparameters in one place
 │   └── serialization.py        # Config serialization utilities
+│
 ├── data/                       # Data layer
+│   ├── __init__.py             # Re-exports constants
 │   ├── constants.py            # Label mappings, class IDs, normalization constants
 │   ├── dataset/                # Dataset + augmentations + sampling
+│   │   ├── __init__.py
 │   │   ├── puma_dataset.py     # PUMADataset (PyTorch Dataset)
 │   │   ├── transforms.py       # Albumentations (vector-safe flips/rotations)
 │   │   └── sampling.py         # Rare-weighted sample weight computation
 │   └── preprocessing/          # Preprocessing pipeline
+│       ├── __init__.py
 │       ├── geojson_parser.py   # GeoJSON → rasterized masks
 │       ├── flow_generator.py   # Cellpose flow + HV map computation
 │       └── preprocess.py       # Orchestrator: TIFF → .npy files
+│
 ├── models/                     # Neural network architectures
+│   ├── __init__.py             # Re-exports all model classes
 │   ├── encoder.py              # Frozen UNI ViT-L/16 + SpatialInjector bridges
 │   ├── backbone.py             # ConvNeXt-Atto backbone
 │   ├── fpn_aggregator.py       # 5-level Feature Pyramid Network
@@ -99,7 +114,9 @@ SymbioPan/
 │   ├── cross_attention.py      # SpatialInjector (cross-attention bridge)
 │   ├── panoptic_net.py         # UnifiedPanopticNet (main Stage 1 model)
 │   └── stage2_refiner.py       # ResidualNucleiRefinerUNet (Stage 2 refiner)
+│
 ├── training/                   # Training pipeline
+│   ├── __init__.py             # Re-exports all training functions
 │   ├── train_loop.py           # Shared train_one_epoch / validate
 │   ├── checkpoint.py           # Safe save/load/extract checkpoint utilities
 │   ├── gpu_setup.py            # GPU detection, config overrides, bf16 patching
@@ -107,39 +124,45 @@ SymbioPan/
 │   ├── cli.py                  # CLI argument parsing
 │   ├── stage1_trainer.py       # Stage 1 training (UnifiedPanopticNet)
 │   └── stage2_trainer.py       # Stage 2 training (ResidualNucleiRefinerUNet)
+│
 ├── inference/                  # Inference pipeline (broken into modules)
+│   ├── __init__.py             # Re-exports inference main
 │   ├── model_loader.py         # Stage 1 + Stage 2 model loading
 │   ├── tiling.py               # WSI tiling, padding, normalization
 │   ├── site_classifier.py      # Primary vs. metastatic site classifier
 │   ├── cellpose_flow.py        # Re-exports unified CellposeFlowGenerator
 │   ├── postprocessing.py       # HV-instance segmentation + polygons
 │   └── infer_wsi.py            # Orchestrator
+│
 ├── utils/                      # Shared utilities
+│   ├── __init__.py             # Re-exports losses, metrics, priors, SC-DFA
 │   ├── losses.py               # MultiTaskUncertaintyLoss, FocalTverskyLoss, etc.
 │   ├── metrics.py              # Dice/IoU accumulators, rare-focused scoring
 │   ├── priors.py               # SpatialLogitAdjuster (site-type prior)
 │   ├── sc_dfa.py               # SC-DFA: semantic class-dependent feature alignment
 │   ├── split_utils.py          # Leakage-safe group-based train/val split
 │   └── normalization.py        # Shared image normalization
+│
 ├── scripts/                    # Thin entry-point scripts
+│   ├── __init__.py
 │   ├── run_preprocess.py
 │   ├── run_stage1.py
 │   ├── run_stage2.py
 │   └── run_inference.py
-├── notebooks/                  # Development notebooks (see train_model.ipynb)
+│
+├── notebooks/                  # Development notebooks
 │   └── train_model.ipynb
-├── checkpoints/                # Training output weights + Docker deployment weights
-├── dataset_processed/          # Preprocessed .npy files
-├── test/                       # Docker test input (TIFF images)
-├── output/                     # Docker inference output
+│
 ├── tests/                      # Unit tests (pytest)
+│   ├── __init__.py
 │   ├── test_losses.py
 │   ├── test_metrics.py
 │   └── test_models.py
-├── Dockerfile                  # Multi-stage Docker build for Grand Challenge
-├── inference.sh                # Docker entrypoint
-├── Makefile                    # Common targets
-└── pyproject.toml              # Project metadata + tooling config
+│
+├── checkpoints/                # Training output weights (gitignored, created at runtime)
+├── dataset_processed/          # Preprocessed .npy files (gitignored)
+├── output/                     # Docker inference output (gitignored)
+└── test/                       # Docker test input (TIFF images)
 ```
 
 ## Pipeline Overview
