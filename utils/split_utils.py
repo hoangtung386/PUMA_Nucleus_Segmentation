@@ -1,7 +1,7 @@
 """Leakage-safe train/val split using group-based splitting by source image."""
 
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Any, List, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -9,7 +9,19 @@ import torch
 from training.logging_utils import logger
 
 
-def _safe_int(value, default: int) -> int:
+def _safe_int(value: Any, default: int) -> int:
+    """Safely converts a value to a scalar integer.
+
+    Args:
+        value: Input value (None, scalar, or array-like).
+        default: Default if value is None or empty.
+
+    Returns:
+        A scalar integer.
+
+    Raises:
+        RuntimeError: If the array has more than one element.
+    """
     if value is None:
         return int(default)
     arr = np.asarray(value)
@@ -20,7 +32,7 @@ def _safe_int(value, default: int) -> int:
     raise RuntimeError(f"Expected scalar integer value, got shape={arr.shape}")
 
 
-def _safe_str_list(value) -> List[str]:
+def _safe_str_list(value: Any) -> List[str]:
     arr = np.asarray(value)
     if arr.size == 0:
         return []
@@ -30,7 +42,7 @@ def _safe_str_list(value) -> List[str]:
 def make_or_load_group_split(
     source_names: Sequence[str],
     is_original: Sequence[bool],
-    split_path,
+    split_path: Union[str, Path],
     seed: int = 42,
     train_fraction: float = 0.8,
     force_new: bool = False,
