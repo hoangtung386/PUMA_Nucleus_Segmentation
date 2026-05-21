@@ -20,7 +20,7 @@ def safe_torch_save(obj: dict, path: str | Path) -> None:
 
 def safe_torch_save_entity(model: torch.nn.Module, path: str | Path) -> None:
     """Save full model (architecture + weights) atomically.
-    
+
     The saved file contains the complete model object, so loading only requires
     ``torch.load(path, map_location='cpu', weights_only=False)`` — no need to
     manually reconstruct the architecture.
@@ -47,9 +47,9 @@ def load_large_checkpoint(path: str | Path, device: str | torch.device = "cpu") 
     return torch.load(str(path), map_location=device, weights_only=False)
 
 
-def extract_state_dict(checkpoint) -> dict:
+def extract_state_dict(checkpoint: dict | torch.nn.Module) -> dict[str, torch.Tensor]:
     """Extract model state dict from various checkpoint formats.
-    
+
     Supports:
     - ``dict`` with keys ``model_state``, ``model_state_dict``, ``state_dict``, or ``model``
     - ``nn.Module`` (entity model) — returns ``model.state_dict()``
