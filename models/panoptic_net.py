@@ -1,3 +1,6 @@
+from typing import Any, Dict, Optional
+
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -17,7 +20,18 @@ class UnifiedPanopticNet(nn.Module):
       - SC-DFA and spatial prior remain [5 tissue x 10 nuclei].
     """
 
-    def __init__(self, vit_model, cnn_model, num_tissue=5, num_nuclei=10, load_uni_weights=True):
+    def __init__(
+        self, vit_model: Any, cnn_model: Any, num_tissue: int = 5, num_nuclei: int = 10, load_uni_weights: bool = True
+    ) -> None:
+        """Initialize the unified panoptic network.
+
+        Args:
+            vit_model: Path or directory containing UNI ViT weights.
+            cnn_model: A timm CNN backbone model.
+            num_tissue: Number of tissue classes (must be 5 for this architecture).
+            num_nuclei: Number of nuclei classes.
+            load_uni_weights: Whether to load pretrained UNI weights.
+        """
         super().__init__()
         if num_tissue != 5:
             raise ValueError("This merged model uses exactly 5 tissue classes. Background is ignored, not predicted.")
@@ -43,7 +57,15 @@ class UnifiedPanopticNet(nn.Module):
         self.lambda_sc_dfa = 0.0
         self.lambda_prior = 0.0
 
-    def enable_sc_dfa(self, state=True):
+    def enable_sc_dfa(self, state: bool = True) -> None:
+        """Enable or disable SC-DFA semantic correction.
+
+        When enabled, lambda_sc_dfa is set to 1.0 unless already configured
+        via set_sc_dfa_lambda. When disabled, lambda_sc_dfa is reset to 0.0.
+
+        Args:
+            state: Whether to enable SC-DFA correction.
+        """
         self.use_sc_dfa = bool(state)
         # Backward compatibility: older training code expected enable_sc_dfa(True)
         # to apply the full SC-DFA correction. Smooth-schedule training should call
@@ -53,16 +75,41 @@ class UnifiedPanopticNet(nn.Module):
         if not self.use_sc_dfa:
             self.lambda_sc_dfa = 0.0
 
-    def set_sc_dfa_lambda(self, value):
+    def set_sc_dfa_lambda(self, value: float) -> None:
+        """Set the SC-DFA interpolation weight and enable correction if positive.
+
+        Clamps value to [0.0, 1.0]. Enables use_sc_dfa when value > 0.
+
+        Args:
+            value: Lambda weight for SC-DFA correction.
+        """
         value = float(value)
         value = max(0.0, min(value, 1.0))
         self.lambda_sc_dfa = value
         self.use_sc_dfa = value > 0.0
 
-    def set_spatial_prior_lambda(self, value):
+    def set_spatial_prior_lambda(self, value: float) -> None:
+        """Set the spatial prior correction weight.
+
+        Args:
+            value: Lambda weight for spatial logit adjustment.
+        """
         self.lambda_prior = float(value)
 
-    def forward(self, images, cellpose_flows, site_types=None):
+    def forward(
+        self, images: torch.Tensor, cellpose_flows: torch.Tensor, site_types: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass through the full panoptic segmentation pipeline.
+
+        Args:
+            images: Input image tensor of shape (B, 3, H, W).
+            cellpose_flows: Cellpose flow predictions of shape (B, 2, H, W).
+            site_types: Optional site type tensor for spatial prior adjustment.
+
+        Returns:
+            dict[str, torch.Tensor]: Dictionary with keys 'tissue', 'np',
+                'nc', and 'hv' containing the respective logit tensors.
+        """
         vit_tokens, cnn_features = self.encoder(images)
         fpn_feats = self.fpn(vit_tokens, cnn_features, img_size=images.shape[-1])
         cp_prior = self.cellpose_adapter(cellpose_flows)
