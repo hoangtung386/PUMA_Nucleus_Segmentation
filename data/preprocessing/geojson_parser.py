@@ -9,6 +9,16 @@ import numpy as np
 
 
 def _feature_class_name(feature: dict) -> Optional[str]:
+    """Extract the class name from a GeoJSON feature.
+
+    Checks 'classification.name', 'name', 'class', and 'label' properties.
+
+    Args:
+        feature: A GeoJSON feature dictionary.
+
+    Returns:
+        The class name string, or None if not found.
+    """
     props = feature.get("properties", {}) or {}
     cls = props.get("classification", {}) or {}
     name = cls.get("name")
@@ -18,6 +28,17 @@ def _feature_class_name(feature: dict) -> Optional[str]:
 
 
 def _polygon_arrays_from_geometry(geometry: Optional[dict]) -> List[np.ndarray]:
+    """Extract polygon coordinate arrays from a GeoJSON geometry dict.
+
+    Supports Polygon and MultiPolygon geometry types.
+
+    Args:
+        geometry: A GeoJSON geometry dictionary, or None.
+
+    Returns:
+        list of numpy arrays, each of shape [N, 2] containing polygon
+        vertex coordinates.
+    """
     if not geometry:
         return []
     gtype = geometry.get("type")

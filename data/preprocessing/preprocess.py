@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
@@ -28,6 +29,17 @@ cfg = PREPROCESS_DEFAULT_CONFIG
 
 
 def read_rgb_tif(path: Path) -> np.ndarray:
+    """Read a TIFF file and return a uint8 RGB image in HWC format.
+
+    Handles single-channel, 3-channel, and 4-channel TIFFs, and normalizes
+    non-uint8 data to [0, 255].
+
+    Args:
+        path: Path to the TIFF file.
+
+    Returns:
+        uint8 array of shape [H, W, 3].
+    """
     image = tiff.imread(str(path))
     if image.ndim == 2:
         image = np.stack([image, image, image], axis=-1)
@@ -44,6 +56,20 @@ def read_rgb_tif(path: Path) -> np.ndarray:
 
 
 def resize_all(image, tissue, nuclei, inst, size: int):
+    """Resize image and all annotation masks to the target size.
+
+    Uses INTER_LINEAR for the image and INTER_NEAREST for masks.
+
+    Args:
+        image: uint8 RGB array [H, W, 3].
+        tissue: uint8 tissue mask [H, W].
+        nuclei: uint8 nuclei mask [H, W].
+        inst: int32 instance mask [H, W].
+        size: Target height and width.
+
+    Returns:
+        Tuple of (image, tissue, nuclei, inst) all resized.
+    """
     if image.shape[0] == size and image.shape[1] == size:
         return image, tissue, nuclei, inst
     image_r = cv2.resize(image, (size, size), interpolation=cv2.INTER_LINEAR)
@@ -54,9 +80,24 @@ def resize_all(image, tissue, nuclei, inst, size: int):
 
 
 def translate_to_center(image, tissue, nuclei, inst, center_xy, out_size, jitter_px):
+    """Translate an image crop so that a given center point is at the center.
+
+    Applies an affine translation with optional random jitter.
+
+    Args:
+        image: uint8 RGB array [H, W, 3].
+        tissue: uint8 tissue mask [H, W].
+        nuclei: uint8 nuclei mask [H, W].
+        inst: int32 instance mask [H, W].
+        center_xy: (cx, cy) target center coordinates.
+        out_size: Output spatial size.
+        jitter_px: Maximum random jitter in pixels (applied per axis).
+
+    Returns:
+        Tuple of (image, tissue, nuclei, inst) after translation.
+    """
     h, w = image.shape[:2]
     cx, cy = center_xy
-    import random
     jx = random.randint(-jitter_px, jitter_px) if jitter_px > 0 else 0
     jy = random.randint(-jitter_px, jitter_px) if jitter_px > 0 else 0
     target_x = out_size / 2.0 + jx
@@ -66,25 +107,54 @@ def translate_to_center(image, tissue, nuclei, inst, center_xy, out_size, jitter
     matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
 
     image_t = cv2.warpAffine(
-        image, matrix, (out_size, out_size),
-        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101,
+        image,
+        matrix,
+        (out_size, out_size),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
     )
     tissue_t = cv2.warpAffine(
-        tissue, matrix, (out_size, out_size),
-        flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        tissue,
+        matrix,
+        (out_size, out_size),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
     )
     nuclei_t = cv2.warpAffine(
-        nuclei, matrix, (out_size, out_size),
-        flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=255,
+        nuclei,
+        matrix,
+        (out_size, out_size),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=255,
     )
     inst_t = cv2.warpAffine(
-        inst.astype(np.float32), matrix, (out_size, out_size),
-        flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        inst.astype(np.float32),
+        matrix,
+        (out_size, out_size),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
     )
     return image_t, tissue_t.astype(np.uint8), nuclei_t.astype(np.uint8), np.rint(inst_t).astype(np.int32)
 
 
-def component_centers(mask: np.ndarray, class_ids: Iterable[int], max_per_class: int = 2) -> List[Tuple[int, Tuple[float, float], int]]:
+def component_centers(
+    mask: np.ndarray, class_ids: Iterable[int], max_per_class: int = 2
+) -> List[Tuple[int, Tuple[float, float], int]]:
+    """Find connected component centroids for specified class IDs.
+
+    Components are sorted by area (largest first) and capped per class.
+
+    Args:
+        mask: Integer segmentation mask [H, W].
+        class_ids: Iterable of class IDs to search for.
+        max_per_class: Maximum number of components to return per class.
+
+    Returns:
+        list of (class_id, (cx, cy), area) tuples.
+    """
     out: List[Tuple[int, Tuple[float, float], int]] = []
     for cls in class_ids:
         binary = (mask == cls).astype(np.uint8)
@@ -102,7 +172,19 @@ def component_centers(mask: np.ndarray, class_ids: Iterable[int], max_per_class:
     return out
 
 
-def sample_weight_from_masks(tissue: np.ndarray, nuclei: np.ndarray, is_rare_augmented: bool) -> Tuple[float, List[int], List[int]]:
+def sample_weight_from_masks(
+    tissue: np.ndarray, nuclei: np.ndarray, is_rare_augmented: bool
+) -> Tuple[float, List[int], List[int]]:
+    """Compute sample weight and list rare class IDs present in the masks.
+
+    Args:
+        tissue: uint8 tissue semantic mask [H, W].
+        nuclei: uint8 nuclei classification mask [H, W].
+        is_rare_augmented: Whether this is a rare-class augmented crop.
+
+    Returns:
+        Tuple of (weight, rare_tissue_ids, rare_nuclei_ids).
+    """
     tissue_present = sorted(int(x) for x in np.unique(tissue) if int(x) in RARE_TISSUE_IDS_PUMA)
     nuclei_present = sorted(int(x) for x in np.unique(nuclei) if int(x) in RARE_NUCLEI_IDS)
 
@@ -116,7 +198,25 @@ def sample_weight_from_masks(tissue: np.ndarray, nuclei: np.ndarray, is_rare_aug
     return float(weight), tissue_present, nuclei_present
 
 
-def save_processed_sample(base_name, image, tissue, nuclei, inst, flow_generator, metadata, is_rare_augmented, source_name):
+def save_processed_sample(
+    base_name, image, tissue, nuclei, inst, flow_generator, metadata, is_rare_augmented, source_name
+):
+    """Save a processed sample to disk and append its metadata.
+
+    Computes the HV map and cellpose flow, writes numpy arrays for image,
+    tissue, nuclei, HV, and flow. Appends a metadata dict to the provided list.
+
+    Args:
+        base_name: Output base filename (without extension).
+        image: uint8 RGB array [H, W, 3].
+        tissue: uint8 tissue mask [H, W].
+        nuclei: uint8 nuclei mask [H, W].
+        inst: int32 instance mask [H, W].
+        flow_generator: CellposeFlowGenerator instance.
+        metadata: List to which a metadata dict is appended.
+        is_rare_augmented: Whether this is a rare-class augmented crop.
+        source_name: Original source ROI name.
+    """
     out_dir = PATHS.data_dir
     paths = {
         "image": out_dir / "images" / f"{base_name}.npy",
@@ -137,18 +237,30 @@ def save_processed_sample(base_name, image, tissue, nuclei, inst, flow_generator
         np.save(paths["hv"], hv)
         np.save(paths["cp"], cp_flow)
 
-    metadata.append({
-        "base_name": base_name,
-        "source_name": source_name,
-        "is_rare_augmented": bool(is_rare_augmented),
-        "rare_tissue_ids": rare_tissue,
-        "rare_nuclei_ids": rare_nuclei,
-        "sample_weight": weight,
-    })
+    metadata.append(
+        {
+            "base_name": base_name,
+            "source_name": source_name,
+            "is_rare_augmented": bool(is_rare_augmented),
+            "rare_tissue_ids": rare_tissue,
+            "rare_nuclei_ids": rare_nuclei,
+            "sample_weight": weight,
+        }
+    )
 
 
 def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metadata: List[dict]):
+    """Process a single ROI image: read, parse annotations, resize, and save.
 
+    Also generates rare-class centered crops if configured in the global
+    PREPROCESS_DEFAULT_CONFIG.
+
+    Args:
+        img_path: Path to the input TIFF image.
+        flow_generator: CellposeFlowGenerator for flow computation.
+        metadata: List to which metadata dicts are appended for each saved
+            sample (original and optional rare crops).
+    """
     raw_dir = PATHS.raw_dir
     tissue_geojson_dir = raw_dir / "01_training_dataset_geojson_tissue"
     nuclei_geojson_dir = raw_dir / "01_training_dataset_geojson_nuclei"
@@ -196,12 +308,15 @@ def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metad
         return bonus * 100000.0 + area
 
     centers.sort(key=priority, reverse=True)
-    centers = centers[:cfg.max_rare_crops_per_image]
+    centers = centers[: cfg.max_rare_crops_per_image]
 
     for j, (kind, cls, center, _) in enumerate(centers):
         aug_name = f"{base}__rare{j:02d}_{kind}{cls}"
         im_t, tissue_t, nuclei_t, inst_t = translate_to_center(
-            image_1024, tissue_1024, nuclei_1024, inst_1024,
+            image_1024,
+            tissue_1024,
+            nuclei_1024,
+            inst_1024,
             center_xy=center,
             out_size=cfg.image_size,
             jitter_px=cfg.rare_crop_jitter_px,
@@ -220,7 +335,13 @@ def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metad
 
 
 def main() -> None:
-    import random
+    """Run the full preprocessing pipeline for PUMA Track 2.
+
+    Reads all TIFF images from the raw directory, parses GeoJSON annotations,
+    resizes to the configured image size, generates HV maps and cellpose flows,
+    creates rare-class centered crops, and writes processed data along with
+    sample_metadata.json to the output directory.
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from threading import Lock
 

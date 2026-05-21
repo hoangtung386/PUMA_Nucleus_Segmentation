@@ -42,7 +42,23 @@ class CellposeFlowGenerator:
     Inference usage: CellposeFlowGenerator(model_type="nuclei", mode="auto", device=device)
     """
 
-    def __init__(self, enabled: bool = True, model_type: str = "nuclei", mode: str = "auto", device: Optional[torch.device] = None):
+    def __init__(
+        self,
+        enabled: bool = True,
+        model_type: str = "nuclei",
+        mode: str = "auto",
+        device: Optional[torch.device] = None,
+    ):
+        """Initialize the Cellpose flow generator.
+
+        Args:
+            enabled: Whether to load and use Cellpose. If False or mode='zero',
+                no model is loaded and zero flows are returned.
+            model_type: Cellpose model type (e.g. 'nuclei', 'cyto3').
+            mode: One of 'auto' (silently fall back to zero if unavailable),
+                'generate' (raise on failure), or 'zero' (skip loading).
+            device: Torch device for inference. Defaults to CPU.
+        """
         self.model_type = model_type
         self.device = device or torch.device("cpu")
         self.model = None
@@ -53,6 +69,7 @@ class CellposeFlowGenerator:
 
         try:
             from cellpose import models as cellpose_models
+
             self.model = cellpose_models.CellposeModel(gpu=(self.device.type == "cuda"), model_type=model_type)
             logger.info("Cellpose loaded model_type=%s gpu=%s", model_type, self.device.type == "cuda")
         except Exception as exc:
@@ -83,10 +100,13 @@ class CellposeFlowGenerator:
         else:
             raise RuntimeError(f"Unexpected Cellpose flow shape: {flow.shape}")
         if flow.shape[1] != h or flow.shape[2] != w:
-            flow = np.stack([
-                cv2.resize(flow[0], (w, h), interpolation=cv2.INTER_LINEAR),
-                cv2.resize(flow[1], (w, h), interpolation=cv2.INTER_LINEAR),
-            ], axis=0)
+            flow = np.stack(
+                [
+                    cv2.resize(flow[0], (w, h), interpolation=cv2.INTER_LINEAR),
+                    cv2.resize(flow[1], (w, h), interpolation=cv2.INTER_LINEAR),
+                ],
+                axis=0,
+            )
         return flow
 
     def make_flow(self, image_rgb: np.ndarray, device: Optional[torch.device] = None) -> np.ndarray | torch.Tensor:
