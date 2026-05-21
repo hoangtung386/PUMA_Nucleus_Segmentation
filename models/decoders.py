@@ -1,10 +1,25 @@
+from typing import Dict, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+"""Decoders for UnifiedPanopticNet (Ablation 1: HoVerNeXt heads, Ablation 2: ASPP tissue)."""
+
 
 class MutualFeatureExchange(nn.Module):
-    def __init__(self, dim=256):
+    """Bidirectional feature exchange between tissue and nuclei branches.
+
+    Each branch generates a prompt from the other branch via grouped convolutions,
+    then fuses its own features with the cross-branch prompt through a 1x1 conv.
+    """
+
+    def __init__(self, dim: int = 256) -> None:
+        """Initialize the mutual feature exchange module.
+
+        Args:
+            dim: Channel dimension for all features (default 256).
+        """
         super().__init__()
         self.w_t = nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim)
         self.w_n = nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim)
@@ -13,7 +28,17 @@ class MutualFeatureExchange(nn.Module):
         self.conv_t = nn.Sequential(nn.Conv2d(dim * 2, dim, 1), nn.BatchNorm2d(dim), nn.ReLU(inplace=True))
         self.conv_n = nn.Sequential(nn.Conv2d(dim * 2, dim, 1), nn.BatchNorm2d(dim), nn.ReLU(inplace=True))
 
-    def forward(self, f_tissue, f_nuclei):
+    def forward(self, f_tissue: torch.Tensor, f_nuclei: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Exchange prompts between tissue and nuclei branches.
+
+        Args:
+            f_tissue: Tissue features of shape (B, dim, H, W).
+            f_nuclei: Nuclei features of shape (B, dim, H, W).
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Refined tissue and nuclei
+                features, each of shape (B, dim, H, W).
+        """
         prompt_n = F.relu(self.norm_t(self.w_t(f_nuclei)))
         f_tissue_out = self.conv_t(torch.cat([f_tissue, prompt_n], dim=1))
         prompt_t = F.relu(self.norm_n(self.w_n(f_tissue)))
@@ -21,25 +46,28 @@ class MutualFeatureExchange(nn.Module):
         return f_tissue_out, f_nuclei_out
 
 
-mutual_feature_exchange = MutualFeatureExchange
-
-
-# =============================================================================
-# Ablation 1: HoVer-NeXt-style nuclei heads
-# -----------------------------------------------------------------------------
-# HoVer-NeXt's public training model uses a ConvNeXtV2 encoder with U-Net decoder
-# blocks. The relevant decoder block is two Conv2dReLU layers, and in the
-# published training config path the decoder is built with use_batchnorm=False.
-#
-# We do NOT use the fake "ConvNeXtBlock" from the feedback. That block is not the
-# HoVer-NeXt decoder block. Here the NP/HV heads follow the original HoVer-NeXt
-# decoder-head style as closely as possible inside your existing FPN architecture:
-#   Conv2d -> Identity/no BN -> ReLU -> Conv2d -> Identity/no BN -> ReLU -> 1x1.
-# This keeps your encoder/FPN/MFE unchanged and only changes the nuclei instance
-# heads for the ablation.
-# =============================================================================
 class HoVerNeXtConv2dReLU(nn.Sequential):
-    def __init__(self, in_channels, out_channels, kernel_size, padding=0, stride=1, use_batchnorm=False):
+    """Single convolutional block: Conv2d + optional BatchNorm + ReLU."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        padding: int = 0,
+        stride: int = 1,
+        use_batchnorm: bool = False,
+    ) -> None:
+        """Initialize the conv-bn-relu block.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            kernel_size: Convolution kernel size.
+            padding: Convolution padding.
+            stride: Convolution stride.
+            use_batchnorm: Whether to include BatchNorm after conv.
+        """
         conv = nn.Conv2d(
             in_channels,
             out_channels,
@@ -56,7 +84,14 @@ class HoVerNeXtConv2dReLU(nn.Sequential):
 class HoVerNeXtNucleiHead(nn.Sequential):
     """HoVer-NeXt-style two-conv decoder head plus 1x1 prediction layer."""
 
-    def __init__(self, in_channels, mid_channels, out_channels):
+    def __init__(self, in_channels: int, mid_channels: int, out_channels: int) -> None:
+        """Initialize the HoVer-NeXt-style nuclei head.
+
+        Args:
+            in_channels: Number of input channels.
+            mid_channels: Number of intermediate channels.
+            out_channels: Number of output channels.
+        """
         super().__init__(
             HoVerNeXtConv2dReLU(in_channels, mid_channels, kernel_size=3, padding=1, use_batchnorm=False),
             HoVerNeXtConv2dReLU(mid_channels, mid_channels, kernel_size=3, padding=1, use_batchnorm=False),
@@ -64,16 +99,17 @@ class HoVerNeXtNucleiHead(nn.Sequential):
         )
 
 
-# =============================================================================
-# Ablation 2: ASPP tissue head
-# -----------------------------------------------------------------------------
-# Tissue segmentation needs larger context than NP/HV. ASPP is isolated to the
-# tissue branch only; NC/MFE/FPN remain unchanged so the ablation remains clean.
-# Rates are moderate for PUMA because blood vessel can be small. If tissue recall
-# improves but vessels degrade, reduce rates to (1, 2, 4, 6).
-# =============================================================================
 class ASPPBranch(nn.Sequential):
-    def __init__(self, in_channels, out_channels, dilation):
+    """Single ASPP branch: atrous conv + BatchNorm + ReLU."""
+
+    def __init__(self, in_channels: int, out_channels: int, dilation: int) -> None:
+        """Initialize an ASPP branch.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            dilation: Atrous dilation rate (1 results in a 1x1 conv).
+        """
         if dilation == 1:
             conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         else:
@@ -89,7 +125,20 @@ class ASPPBranch(nn.Sequential):
 
 
 class ASPP(nn.Module):
-    def __init__(self, in_channels, out_channels, rates=(1, 3, 6, 9)):
+    """Atrous Spatial Pyramid Pooling for multi-scale context.
+
+    Applies parallel atrous convolutions at multiple dilation rates and
+    concatenates the results through a 1x1 projection.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, rates: Tuple[int, ...] = (1, 3, 6, 9)) -> None:
+        """Initialize ASPP module.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels per branch.
+            rates: Tuple of dilation rates for parallel atrous branches.
+        """
         super().__init__()
         self.branches = nn.ModuleList([ASPPBranch(in_channels, out_channels, r) for r in rates])
         self.project = nn.Sequential(
@@ -99,7 +148,16 @@ class ASPP(nn.Module):
             nn.Dropout2d(p=0.1),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through ASPP.
+
+        Args:
+            x: Input tensor of shape (B, in_channels, H, W).
+
+        Returns:
+            torch.Tensor: Multi-scale aggregated features of shape
+                (B, out_channels, H, W).
+        """
         return self.project(torch.cat([branch(x) for branch in self.branches], dim=1))
 
 
@@ -117,7 +175,14 @@ class ParallelDecoders(nn.Module):
       - NC head, because Ablation 1 targets instance quality only.
     """
 
-    def __init__(self, fpn_dim=256, num_tissue=5, num_nuclei=10):
+    def __init__(self, fpn_dim: int = 256, num_tissue: int = 5, num_nuclei: int = 10) -> None:
+        """Initialize parallel decoders for tissue, nuclei class, nuclei presence, and HoVer maps.
+
+        Args:
+            fpn_dim: FPN feature dimension (default 256).
+            num_tissue: Number of tissue classes (must be 5).
+            num_nuclei: Number of nuclei classes (default 10).
+        """
         super().__init__()
         if num_tissue != 5:
             raise ValueError("This merged model intentionally uses 5 tissue classes, no background channel.")
@@ -146,7 +211,19 @@ class ParallelDecoders(nn.Module):
         self.np_head = HoVerNeXtNucleiHead(micro_in, 64, 1)
         self.hv_head = HoVerNeXtNucleiHead(micro_in, 64, 2)
 
-    def forward(self, fpn_feats, cellpose_prior):
+    def forward(
+        self, fpn_feats: Dict[str, torch.Tensor], cellpose_prior: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass through parallel decoders.
+
+        Args:
+            fpn_feats: Dictionary of FPN feature maps at scales p1-p5.
+            cellpose_prior: Cellpose flow prior of shape (B, 2, H, W).
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                tissue_logits, np_logits, nc_logits, hv_logits.
+        """
         p1, p2, p3, p4, p5 = fpn_feats["p1"], fpn_feats["p2"], fpn_feats["p3"], fpn_feats["p4"], fpn_feats["p5"]
         f_t, f_n = self.exchange(self.tissue_proj(p3), self.nuclei_proj(p3))
 
