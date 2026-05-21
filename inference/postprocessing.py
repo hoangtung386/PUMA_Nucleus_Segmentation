@@ -105,12 +105,14 @@ def instances_to_polygons(
         if len(points) < 3:
             continue
 
-        polygons.append({
-            "name": PUMA_NUCLEI_ID_TO_NAME[int(class_idx)],
-            "seed_point": points[0],
-            "path_points": points,
-            "sub_type": "",
-            "groups": [],
-            "probability": float(max(0.0, min(1.0, conf))),
-        })
+        polygons.append(
+            {
+                "name": PUMA_NUCLEI_ID_TO_NAME[int(class_idx)],
+                "seed_point": points[0],
+                "path_points": points,
+                "sub_type": "",
+                "groups": [],
+                "probability": float(max(0.0, min(1.0, conf))),
+            }
+        )
     return polygons

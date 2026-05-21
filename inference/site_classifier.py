@@ -15,6 +15,21 @@ from training.logging_utils import logger
 
 
 def load_site_classifier(checkpoint_path: Optional[str], device: torch.device, arch: str = "convnext_atto"):
+    """Loads a site classifier (primary vs. metastatic) from a checkpoint.
+
+    Tries multiple timm architectures if the initial one fails to load.
+
+    Args:
+        checkpoint_path: Optional path to the classifier checkpoint.
+        device: Torch device.
+        arch: Preferred timm architecture name.
+
+    Returns:
+        Loaded model in eval mode, or None if checkpoint_path is None/missing.
+
+    Raises:
+        RuntimeError: If the checkpoint cannot be loaded with any architecture.
+    """
     if checkpoint_path is None:
         return None
     checkpoint_path = Path(checkpoint_path)
@@ -42,13 +57,23 @@ def load_site_classifier(checkpoint_path: Optional[str], device: torch.device, a
             last_error = exc
 
     raise RuntimeError(
-        f"Could not load site classifier {checkpoint_path}. Tried {candidate_arches}. "
-        f"Last error: {last_error}"
+        f"Could not load site classifier {checkpoint_path}. Tried {candidate_arches}. Last error: {last_error}"
     )
 
 
 @torch.no_grad()
 def predict_site_type(site_model, image_rgb: np.ndarray, device: torch.device, image_size: int = 256) -> str:
+    """Predicts whether a whole-slide image is primary or metastatic.
+
+    Args:
+        site_model: Loaded site classifier model.
+        image_rgb: uint8 RGB image array.
+        device: Torch device.
+        image_size: Resize dimension for the classifier input.
+
+    Returns:
+        'primary' or 'metastatic'.
+    """
     resized = cv2.resize(image_rgb, (image_size, image_size), interpolation=cv2.INTER_AREA)
     x = normalize_tile(resized, device)
     with autocast_enabled(device):
@@ -61,6 +86,19 @@ def predict_site_type(site_model, image_rgb: np.ndarray, device: torch.device, i
 
 
 def resolve_site_type(args, cfg: Dict, image_rgb: np.ndarray, device: torch.device) -> str:
+    """Resolves the site type (primary vs. metastatic) for inference.
+
+    Priority: manual override -> site classifier -> config default.
+
+    Args:
+        args: Parsed command-line arguments.
+        cfg: Stage 1 config dict.
+        image_rgb: uint8 RGB image array.
+        device: Torch device.
+
+    Returns:
+        'primary' or 'metastatic'.
+    """
     if args.site_type is not None:
         logger.info("Using manual site type: %s", args.site_type)
         return args.site_type

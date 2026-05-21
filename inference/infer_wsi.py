@@ -36,6 +36,11 @@ DEFAULT_STAGE1_CP = "/opt/app/checkpoint/best_model.pth"
 
 
 def parse_args():
+    """Parses command-line arguments for WSI inference.
+
+    Returns:
+        Namespace with parsed arguments.
+    """
     parser = argparse.ArgumentParser(description="PUMA Track 2 inference")
     parser.add_argument("--input", default=DEFAULT_INPUT_DIR)
     parser.add_argument("--output", default=DEFAULT_OUTPUT_DIR)
@@ -62,7 +67,9 @@ def parse_args():
     )
     parser.add_argument("--site-classifier-size", type=int, default=INFERENCE_DEFAULT_CONFIG.site_classifier_size)
 
-    parser.add_argument("--cellpose-mode", choices=["auto", "generate", "zero"], default=INFERENCE_DEFAULT_CONFIG.cellpose_mode)
+    parser.add_argument(
+        "--cellpose-mode", choices=["auto", "generate", "zero"], default=INFERENCE_DEFAULT_CONFIG.cellpose_mode
+    )
     parser.add_argument("--cellpose-model-type", default=INFERENCE_DEFAULT_CONFIG.cellpose_model_type)
     parser.add_argument("--np-threshold", type=float, default=INFERENCE_DEFAULT_CONFIG.np_threshold)
     parser.add_argument("--min-nucleus-area", type=int, default=INFERENCE_DEFAULT_CONFIG.min_nucleus_area)
@@ -71,6 +78,21 @@ def parse_args():
 
 @torch.no_grad()
 def run_tile(model_s1, model_s2, stage2_alpha, tile_uint8, tensor, flow_generator, device, site_type):
+    """Runs inference on a single tile.
+
+    Args:
+        model_s1: Stage 1 panoptic model.
+        model_s2: Optional Stage 2 residual refiner.
+        stage2_alpha: Blending weight for Stage 2 residuals.
+        tile_uint8: Raw uint8 tile array.
+        tensor: Normalized tile tensor.
+        flow_generator: Cellpose flow generator.
+        device: Torch device.
+        site_type: 'primary' or 'metastatic'.
+
+    Returns:
+        Tuple of (tissue_logits, np_logits, nc_logits, hv) as float numpy arrays.
+    """
     flow = flow_generator.make_flow(tile_uint8, device)
     if flow.shape[-2:] != tensor.shape[-2:]:
         flow = F.interpolate(flow, size=tensor.shape[-2:], mode="bilinear", align_corners=False)
@@ -90,7 +112,40 @@ def run_tile(model_s1, model_s2, stage2_alpha, tile_uint8, tensor, flow_generato
     return tissue_logits, np_logits, nc_logits, hv
 
 
-def process_image(input_path, output_dir, model_s1, model_s2, stage2_alpha, flow_generator, device, tile_size, overlap, site_type, np_threshold, min_nucleus_area):
+def process_image(
+    input_path,
+    output_dir,
+    model_s1,
+    model_s2,
+    stage2_alpha,
+    flow_generator,
+    device,
+    tile_size,
+    overlap,
+    site_type,
+    np_threshold,
+    min_nucleus_area,
+):
+    """Processes a single WSI image end-to-end.
+
+    Tiles the image, runs inference on each tile with overlap handling,
+    aggregates tissue predictions, performs instance segmentation, and
+    saves outputs (tissue mask as TIFF, nuclei polygons as JSON).
+
+    Args:
+        input_path: Path to the input TIFF image.
+        output_dir: Output directory path.
+        model_s1: Stage 1 model.
+        model_s2: Optional Stage 2 model.
+        stage2_alpha: Stage 2 blending weight.
+        flow_generator: Cellpose flow generator.
+        device: Torch device.
+        tile_size: Tile size in pixels.
+        overlap: Tile overlap in pixels.
+        site_type: 'primary' or 'metastatic'.
+        np_threshold: Nucleus presence confidence threshold.
+        min_nucleus_area: Minimum nucleus area in pixels.
+    """
     img = read_rgb_uint8(input_path)
     h, w = img.shape[:2]
     logger.info("Processing %s: %dx%d | site_type=%s", input_path.name, h, w, site_type)
@@ -109,18 +164,20 @@ def process_image(input_path, output_dir, model_s1, model_s2, stage2_alpha, flow
     for ri, r in enumerate(rows):
         for ci, c in enumerate(cols):
             logger.info("Tile row=%d/%d col=%d/%d", ri + 1, len(rows), ci + 1, len(cols))
-            tile = img[r:min(r + tile_size, h), c:min(c + tile_size, w)]
+            tile = img[r : min(r + tile_size, h), c : min(c + tile_size, w)]
             tile, real_h, real_w = pad_reflect(tile, tile_size)
             tensor = normalize_tile(tile, device)
-            t_logits, np_logit, nc_logits, hv = run_tile(model_s1, model_s2, stage2_alpha, tile, tensor, flow_generator, device, site_type)
+            t_logits, np_logit, nc_logits, hv = run_tile(
+                model_s1, model_s2, stage2_alpha, tile, tensor, flow_generator, device, site_type
+            )
 
             t_logits = t_logits[:, :real_h, :real_w]
             np_logit = np_logit[:real_h, :real_w]
             nc_logits = nc_logits[:, :real_h, :real_w]
             hv = hv[:, :real_h, :real_w]
 
-            tissue_acc[:, r:r + real_h, c:c + real_w] += t_logits
-            tissue_count[r:r + real_h, c:c + real_w] += 1.0
+            tissue_acc[:, r : r + real_h, c : c + real_w] += t_logits
+            tissue_count[r : r + real_h, c : c + real_w] += 1.0
 
             inst = hv_instance_segmentation(np_logit, hv, threshold=np_threshold, min_size=min_nucleus_area)
             ids = classify_instances(inst, nc_logits)
@@ -139,6 +196,7 @@ def process_image(input_path, output_dir, model_s1, model_s2, stage2_alpha, flow
     tissue_dir.mkdir(parents=True, exist_ok=True)
 
     import tifffile
+
     tifffile.imwrite(str(tissue_dir / input_path.name), tissue_puma, photometric="minisblack")
 
     json_path = output_dir / "melanoma-10-class-nuclei-segmentation.json"
@@ -150,6 +208,11 @@ def process_image(input_path, output_dir, model_s1, model_s2, stage2_alpha, flow
 
 
 def main():
+    """Main entry point for WSI inference.
+
+    Parses arguments, loads models, resolves site type, generates cellpose
+    flow, and runs process_image on the input WSI.
+    """
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
