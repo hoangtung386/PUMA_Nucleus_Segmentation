@@ -7,6 +7,14 @@ from configs.defaults import Stage1Config, Stage2Config
 
 
 def parse_stage1_args() -> Stage1Config:
+    """Parse command-line arguments for Stage 1 training.
+
+    Overridable fields: ``epochs``, ``lr``, ``batch_size``, ``val_ratio``,
+    ``resume``.  All other fields use the defaults from ``Stage1Config``.
+
+    Returns:
+        Stage1Config: Config dataclass with any CLI overrides applied.
+    """
     parser = argparse.ArgumentParser(description="Stage 1 Training")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
@@ -31,6 +39,14 @@ def parse_stage1_args() -> Stage1Config:
 
 
 def parse_stage2_args() -> Stage2Config:
+    """Parse command-line arguments for Stage 2 training.
+
+    Overridable fields: ``epochs``, ``lr``, ``batch_size``, ``val_ratio``.
+    All other fields use the defaults from ``Stage2Config``.
+
+    Returns:
+        Stage2Config: Config dataclass with any CLI overrides applied.
+    """
     parser = argparse.ArgumentParser(description="Stage 2 Training")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
