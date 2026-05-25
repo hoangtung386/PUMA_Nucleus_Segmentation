@@ -233,8 +233,8 @@ def main(override_cfg=None, test_loader=None) -> dict:
 
     if cfg.compile_model:
         try:
-            model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
-            logger.info("Model compiled with torch.compile (reduce-overhead)")
+            model = torch.compile(model, mode="default", fullgraph=False)
+            logger.info("Model compiled with torch.compile (default)")
         except Exception as e:
             logger.warning("torch.compile failed (%s); running uncompiled", e)
 

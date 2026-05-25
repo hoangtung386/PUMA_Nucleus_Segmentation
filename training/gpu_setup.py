@@ -32,25 +32,29 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> Stage1Config:
     if force_batch_size is not None:
         bs = force_batch_size
     elif peak_vram >= 75:
-        bs = 12
+        bs = 6
     elif peak_vram >= 40:
-        bs = 8
-    elif peak_vram >= 16:
         bs = 4
-    else:
+    elif peak_vram >= 16:
         bs = 2
+    else:
+        bs = 1
 
     if num_gpus > 1:
         bs = bs * num_gpus
 
+    # Effective batch ≈ 12–16; compensate smaller bs with grad_accum
+    accum = max(2, 12 // bs)
+
     cpu_count = os.cpu_count() or 4
     n_workers = min(8, cpu_count)
 
-    print(f"  -> batch_size = {bs}, num_workers = {n_workers}")
+    print(f"  -> batch_size = {bs}, grad_accum_steps = {accum}, num_workers = {n_workers}")
 
     cfg = replace(
         STAGE1_DEFAULT_CONFIG,
         batch_size=bs,
+        grad_accum_steps=accum,
         num_workers=n_workers,
         multi_gpu=num_gpus > 1,
         use_fp16=True,
