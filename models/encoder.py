@@ -25,19 +25,15 @@ _VIRCHOW2_CFG = dict(
 
 
 def _load_virchow2_config(model_name: str) -> ViTConfig:
+    cfg = dict(_VIRCHOW2_CFG)
     try:
         config_path = hf_hub_download(repo_id=model_name, filename="config.json")
         with open(config_path) as f:
-            cfg = json.load(f)
+            cfg.update({k: v for k, v in json.load(f).items() if k in _VIRCHOW2_CFG})
         logger.info("Loaded Virchow2 config from cache: %s", config_path)
-        return ViTConfig(
-            **{k: cfg[k] for k in _VIRCHOW2_CFG if k in cfg},
-        )
     except Exception:
-        pass
-
-    logger.warning("Virchow2 config not available; using hardcoded ViT-H/14 config")
-    return ViTConfig(**_VIRCHOW2_CFG)
+        logger.warning("Virchow2 config not available; using hardcoded ViT-H/14 config")
+    return ViTConfig(**cfg)
 
 
 def build_virchow2_vit(
