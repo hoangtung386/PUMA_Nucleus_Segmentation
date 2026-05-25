@@ -150,10 +150,12 @@ class UnifiedPanopticEncoder(nn.Module):
             x = self.vit_model.ln_f(x)
 
         spatial_list = []
+        gh = img.shape[-2] // 14
+        gw = img.shape[-1] // 14
+        n_spatial = gh * gw
         for feat in intermediate_features:
-            feat_no_cls = feat[:, 1:, :]
-            grid = img.shape[-2] // 14
-            spatial_list.append(feat_no_cls.transpose(1, 2).reshape(-1, feat_no_cls.shape[-1], grid, grid))
+            feat_spatial = feat[:, -n_spatial:, :]
+            spatial_list.append(feat_spatial.transpose(1, 2).reshape(-1, feat_spatial.shape[-1], gh, gw))
         vit_intermediate_tensor = torch.stack(spatial_list, dim=0) if spatial_list else x.unsqueeze(0)
 
         return x, cnn_features, vit_intermediate_tensor
