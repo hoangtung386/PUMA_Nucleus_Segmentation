@@ -1,14 +1,43 @@
 """Virchow2 ViT-H/14 encoder with fine-tuning and multi-block feature extraction."""
 
+import json
+import math
 from typing import Any, List, Tuple
 
-import math
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModel, ViTConfig
+from huggingface_hub import hf_hub_download
+from transformers import AutoModel, ViTConfig
 
 from models.cross_attention import SpatialInjector
 from training.logging_utils import logger
+
+_VIRCHOW2_CFG = dict(
+    hidden_size=1280,
+    num_hidden_layers=32,
+    num_attention_heads=16,
+    intermediate_size=5120,
+    patch_size=14,
+    image_size=1024,
+    num_channels=3,
+    layer_norm_eps=1e-6,
+)
+
+
+def _load_virchow2_config(model_name: str) -> ViTConfig:
+    try:
+        config_path = hf_hub_download(repo_id=model_name, filename="config.json")
+        with open(config_path) as f:
+            cfg = json.load(f)
+        logger.info("Loaded Virchow2 config from cache: %s", config_path)
+        return ViTConfig(
+            **{k: cfg[k] for k in _VIRCHOW2_CFG if k in cfg},
+        )
+    except Exception:
+        pass
+
+    logger.warning("Virchow2 config not available; using hardcoded ViT-H/14 config")
+    return ViTConfig(**_VIRCHOW2_CFG)
 
 
 def build_virchow2_vit(
@@ -16,22 +45,7 @@ def build_virchow2_vit(
     load_weights: bool = True,
     fine_tune_last_n_blocks: int = 6,
 ) -> Any:
-    try:
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True, local_files_only=True)
-    except Exception:
-        try:
-            logger.warning("Virchow2 config not found locally, downloading (requires HF token for gated repo)")
-            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-        except Exception:
-            logger.warning("Virchow2 config loading failed; using fallback ViT-H/14 config")
-            config = ViTConfig(
-                hidden_size=1280,
-                num_hidden_layers=32,
-                num_attention_heads=16,
-                intermediate_size=1280 * 4,
-                patch_size=14,
-                image_size=1024,
-            )
+    config = _load_virchow2_config(model_name)
 
     if hasattr(config, "num_labels") and config.num_labels is None:
         config.num_labels = 0
