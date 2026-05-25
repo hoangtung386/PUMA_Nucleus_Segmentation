@@ -4,127 +4,91 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.components import ContextEncoder
+from models.components.context_fusion import ContextFusionModule
 from models.decoders import ParallelDecoders
 from models.encoder import UnifiedPanopticEncoder
-from models.fpn_aggregator import FPNAggregator
-from utils.priors import SpatialLogitAdjuster
+from models.fpn_aggregator import HierarchicalFPN
 from utils.sc_dfa import SCDFA
 
 
 class UnifiedPanopticNet(nn.Module):
-    """
-    Merged architecture:
-      - Version-2.2 dual encoder + FPN + parallel decoder structure.
-      - Version-4 class names/preprocessed labels.
-      - No tissue background output channel: tissue logits are [B,5,H,W].
-      - SC-DFA and spatial prior remain [5 tissue x 10 nuclei].
-    """
-
     def __init__(
-        self, vit_model: Any, cnn_model: Any, num_tissue: int = 5, num_nuclei: int = 10, load_uni_weights: bool = True
+        self,
+        virchow2_model_name: str = "paige-ai/Virchow2",
+        cnn_model: Any = None,
+        num_tissue: int = 5,
+        num_nuclei: int = 10,
+        fine_tune_last_n_blocks: int = 6,
+        load_encoder_weights: bool = True,
+        use_context_encoder: bool = False,
     ) -> None:
-        """Initialize the unified panoptic network.
-
-        Args:
-            vit_model: Path or directory containing UNI ViT weights.
-            cnn_model: A timm CNN backbone model.
-            num_tissue: Number of tissue classes (must be 5 for this architecture).
-            num_nuclei: Number of nuclei classes.
-            load_uni_weights: Whether to load pretrained UNI weights.
-        """
         super().__init__()
         if num_tissue != 5:
-            raise ValueError("This merged model uses exactly 5 tissue classes. Background is ignored, not predicted.")
-        self.encoder = UnifiedPanopticEncoder(
-            cnn_model=cnn_model,
-            local_weight_dir=vit_model,
-            load_uni_weights=load_uni_weights,
-        )
-        cnn_dims = cnn_model.feature_info.channels() if hasattr(cnn_model, "feature_info") else [40, 80, 160, 320]
-        self.fpn = FPNAggregator(cnn_dims=cnn_dims)
-        self.decoders = ParallelDecoders(num_tissue=num_tissue, num_nuclei=num_nuclei)
+            raise ValueError("This model uses exactly 5 tissue classes. Background is ignored, not predicted.")
 
-        self.cellpose_adapter = nn.Sequential(
-            nn.Conv2d(2, 2, 3, padding=1),
-            nn.InstanceNorm2d(2),
-            nn.GELU(),
-            nn.Conv2d(2, 2, 3, padding=1),
+        self.encoder = UnifiedPanopticEncoder(
+            virchow2_model_name=virchow2_model_name,
+            cnn_model=cnn_model,
+            fine_tune_last_n_blocks=fine_tune_last_n_blocks,
+            load_weights=load_encoder_weights,
         )
+        cnn_dims = cnn_model.feature_info.channels() if hasattr(cnn_model, "feature_info") else [96, 192, 384, 768]
+        self.fpn = HierarchicalFPN(cnn_dims=cnn_dims)
+        self.decoders = ParallelDecoders(num_tissue=num_tissue, num_nuclei=num_nuclei, low_level_channels=cnn_dims[0])
+
+        self.use_context_encoder = use_context_encoder
+        if use_context_encoder:
+            self.context_encoder = ContextEncoder(output_dim=256, output_mode="global")
+            self.context_fusion = ContextFusionModule(context_dim=256, fpn_dim=256)
 
         self.sc_dfa = SCDFA(num_tissue_classes=num_tissue, num_nuclei_classes=num_nuclei)
-        self.spatial_prior = SpatialLogitAdjuster(num_tissue_classes=num_tissue, num_nuclei_classes=num_nuclei)
         self.use_sc_dfa = False
         self.lambda_sc_dfa = 0.0
-        self.lambda_prior = 0.0
 
     def enable_sc_dfa(self, state: bool = True) -> None:
-        """Enable or disable SC-DFA semantic correction.
-
-        When enabled, lambda_sc_dfa is set to 1.0 unless already configured
-        via set_sc_dfa_lambda. When disabled, lambda_sc_dfa is reset to 0.0.
-
-        Args:
-            state: Whether to enable SC-DFA correction.
-        """
         self.use_sc_dfa = bool(state)
-        # Backward compatibility: older training code expected enable_sc_dfa(True)
-        # to apply the full SC-DFA correction. Smooth-schedule training should call
-        # set_sc_dfa_lambda(...) each epoch.
         if self.use_sc_dfa and self.lambda_sc_dfa <= 0.0:
             self.lambda_sc_dfa = 1.0
         if not self.use_sc_dfa:
             self.lambda_sc_dfa = 0.0
 
     def set_sc_dfa_lambda(self, value: float) -> None:
-        """Set the SC-DFA interpolation weight and enable correction if positive.
-
-        Clamps value to [0.0, 1.0]. Enables use_sc_dfa when value > 0.
-
-        Args:
-            value: Lambda weight for SC-DFA correction.
-        """
         value = float(value)
         value = max(0.0, min(value, 1.0))
         self.lambda_sc_dfa = value
         self.use_sc_dfa = value > 0.0
 
-    def set_spatial_prior_lambda(self, value: float) -> None:
-        """Set the spatial prior correction weight.
-
-        Args:
-            value: Lambda weight for spatial logit adjustment.
-        """
-        self.lambda_prior = float(value)
-
     def forward(
-        self, images: torch.Tensor, cellpose_flows: torch.Tensor, site_types: Optional[torch.Tensor] = None
+        self,
+        images: torch.Tensor,
+        site_ids: Optional[torch.Tensor] = None,
+        context_roi: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass through the full panoptic segmentation pipeline.
+        vit_tokens, cnn_features, vit_intermediate = self.encoder(images)
+        fpn_feats, low_level_feat = self.fpn(vit_tokens, cnn_features, vit_intermediate, img_size=images.shape[-1])
 
-        Args:
-            images: Input image tensor of shape (B, 3, H, W).
-            cellpose_flows: Cellpose flow predictions of shape (B, 2, H, W).
-            site_types: Optional site type tensor for spatial prior adjustment.
+        if self.use_context_encoder and context_roi is not None:
+            ctx_desc = self.context_encoder(context_roi)
+            fpn_feats = self.context_fusion(fpn_feats, ctx_desc)
 
-        Returns:
-            dict[str, torch.Tensor]: Dictionary with keys 'tissue', 'np',
-                'nc', and 'hv' containing the respective logit tensors.
-        """
-        vit_tokens, cnn_features = self.encoder(images)
-        fpn_feats = self.fpn(vit_tokens, cnn_features, img_size=images.shape[-1])
-        cp_prior = self.cellpose_adapter(cellpose_flows)
-
-        tissue_logits, np_logits, nc_logits, hv_logits = self.decoders(fpn_feats, cp_prior)
+        tissue_logits, np_logits, nc_logits, hv_logits, boundary_map = self.decoders(
+            fpn_feats, low_level_feat, vit_intermediate
+        )
         out_size = images.shape[-2:]
         tissue_logits = F.interpolate(tissue_logits, size=out_size, mode="bilinear", align_corners=False)
         np_logits = F.interpolate(np_logits, size=out_size, mode="bilinear", align_corners=False)
         nc_logits = F.interpolate(nc_logits, size=out_size, mode="bilinear", align_corners=False)
         hv_logits = F.interpolate(hv_logits, size=out_size, mode="bilinear", align_corners=False)
+        boundary_map = F.interpolate(boundary_map, size=out_size, mode="bilinear", align_corners=False)
 
         if self.use_sc_dfa and self.lambda_sc_dfa > 0.0:
             nc_logits = nc_logits + self.lambda_sc_dfa * self.sc_dfa(tissue_logits)
 
-        if self.lambda_prior > 0.0 and site_types is not None:
-            nc_logits = self.spatial_prior(nc_logits, tissue_logits, site_types, self.lambda_prior)
-
-        return {"tissue": tissue_logits, "np": np_logits, "nc": nc_logits, "hv": hv_logits}
+        return {
+            "tissue": tissue_logits,
+            "np": np_logits,
+            "nc": nc_logits,
+            "hv": hv_logits,
+            "boundary": boundary_map,
+        }
