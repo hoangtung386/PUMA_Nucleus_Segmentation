@@ -66,6 +66,8 @@ python -m pytest tests/
 ```
 SymbioPan/
 ├── README.md
+├── docs/
+│   └── architecture.md              # Full model architecture diagram (Mermaid)
 ├── requirements.txt
 ├── pyproject.toml
 ├── Dockerfile
