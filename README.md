@@ -1,15 +1,14 @@
 # SymbioPan v8 "CellPath" — PUMA Track 2 Panoptic Segmentation
 
-Single-stage panoptic segmentation pipeline for the [PUMA Grand Challenge](https://puma.grand-challenge.org/) (Track 2: 10-class nuclei + 5-class tissue), built on **Virchow2 ViT-H/14 + ConvNeXt-Tiny** with **FiLM site conditioning**, **context ROI encoding**, and **test-time augmentation**.
+Single-stage panoptic segmentation pipeline for the [PUMA Grand Challenge](https://puma.grand-challenge.org/) (Track 2: 10-class nuclei + 5-class tissue), built on **Virchow2 ViT-H/14 + ConvNeXt-Tiny** with **context ROI encoding** and **test-time augmentation**.
 
 **Architecture highlights vs. v7:**
 - Virchow2 ViT-H/14 (fine-tune last 6 blocks) — replaces frozen UNI ViT-L/16
 - ConvNeXt-Tiny (28.6M params) — replaces ConvNeXt-Atto (3.7M params)
 - CellViT++ nuclei decoder + DeepLabV3+ tissue decoder — replaces plain ASPP
-- FiLM conditioning (9-site) — replaces SpatialLogitAdjuster (2-class prior)
 - Context ROI encoder (EfficientNet-B0, 5120×5120→320×320) — new
 - TTA (8 augmentations) — replaces Stage 2 refiner
-- Stain augmentation (HEStain) + Mixup/CutMix — new training improvements
+- Stain augmentation (HEStain) — new training improvement
 - Warm-up + cosine decay LR schedule
 
 ## Quick Start
@@ -77,8 +76,7 @@ SymbioPan/
 │
 ├── configs/
 │   ├── __init__.py
-│   ├── defaults.py               # Stage1Config, PreprocessConfig, InferenceConfig
-│   └── serialization.py
+│   └── defaults.py               # Stage1Config, PreprocessConfig, InferenceConfig
 │
 ├── data/
 │   ├── __init__.py
@@ -102,14 +100,11 @@ SymbioPan/
 │   ├── decoders.py                # DeepLabV3+ tissue + CellViT++ nuclei + BoundaryAttn
 │   ├── cross_attention.py         # SpatialInjector
 │   ├── panoptic_net.py            # UnifiedPanopticNet (main model)
-│   ├── stage2_refiner.py          # Deprecated — kept for reference
 │   └── components/
 │       ├── __init__.py
 │       ├── boundary_attention.py
 │       ├── context_encoder.py     # EfficientNet-B0 for context ROIs
-│       ├── context_fusion.py      # FiLM-style context conditioning
-│       ├── film_conditioning.py   # FiLM site conditioning (9-class)
-│       └── register_tokens.py     # DINOv2-style register tokens
+│       └── context_fusion.py      # FiLM-style context conditioning
 │
 ├── training/
 │   ├── __init__.py
@@ -132,12 +127,9 @@ SymbioPan/
 │   ├── __init__.py
 │   ├── losses.py                  # MultiTaskUncertaintyLoss + boundary-aware
 │   ├── metrics.py
-│   ├── priors.py                  # Deprecated — use film_conditioning
 │   ├── sc_dfa.py
 │   ├── split_utils.py
-│   ├── normalization.py
-│   ├── scheduler_utils.py         # Warm-up + cosine decay
-│   └── mixup_cutmix.py            # Mixup/CutMix augmentation
+│   └── scheduler_utils.py         # Warm-up + cosine decay
 │
 ├── scripts/
 │   ├── run_preprocess.py
@@ -148,6 +140,8 @@ SymbioPan/
 │   └── train_model.ipynb
 │
 ├── tests/
+│   ├── test_dataset.py
+│   ├── test_inference.py
 │   ├── test_losses.py
 │   ├── test_metrics.py
 │   └── test_models.py
@@ -170,9 +164,8 @@ SymbioPan/
 - **Encoder**: Virchow2 ViT-H/14 (fine-tune last 6 blocks) + ConvNeXt-Tiny with 4 SpatialInjector bridges
 - **Neck**: HierarchicalFPN — 5-level FPN (P1–P5) with multi-scale ViT features
 - **Decoders**: DeepLabV3+ tissue head + CellViT++ nuclei decoder (NC/NP/HV) + BoundaryAttentionModule
-- **Site conditioning**: FiLM conditioning (9-site: primary + 8 metastatic sites)
 - **Context ROI**: Optional EfficientNet-B0 encoder for 5120×5120 context
-- **Rare-class focus**: WeightedRandomSampler, Focal Tversky loss with smooth ramp, stain aug, Mixup/CutMix
+- **Rare-class focus**: WeightedRandomSampler, Focal Tversky loss with smooth ramp, stain augmentation
 
 ### 3. Inference
 - Sliding-window tiling with configurable overlap
@@ -188,7 +181,6 @@ SymbioPan/
 | **Virchow2 ViT-H/14** | SOTA foundation model for pathology (3.1M WSIs, 632M params) — replaces UNI |
 | **ConvNeXt-Tiny** | 7× more capacity than Atto for spatial features |
 | **Fine-tune last 6 ViT blocks** | Adapts to dense prediction without catastrophic forgetting |
-| **FiLM conditioning (9-site)** | Learns per-site feature modulation — replaces SpatialLogitAdjuster |
 | **Context ROI** | 5× larger field-of-view for tissue type disambiguation |
 | **TTA replaces Stage 2** | 8-aug averaging gives +2-3% without additional training |
 | **SC-DFA** | Learns tissue→nuclei co-occurrence patterns via 5×10 weight matrix |
@@ -231,7 +223,6 @@ All parameters in `configs/defaults.py` as `@dataclass(frozen=True)`:
 - Virchow2 ViT-H/14 encoder with fine-tuning
 - ConvNeXt-Tiny backbone
 - DeepLabV3+ tissue decoder + CellViT++ nuclei decoder
-- FiLM 9-site conditioning
 - Context ROI encoder (EfficientNet-B0)
 - Stain augmentation (HEStain)
 - Warm-up + cosine decay LR

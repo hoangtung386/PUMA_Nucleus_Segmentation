@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
-TAG="puma-merged-v22-v4-track2"
+TAG="symbiopan-v8-cellpath"
 INPUT_DIR="${SCRIPT_DIR}/test"
 OUTPUT_DIR="${SCRIPT_DIR}/output"
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${INPUT_DIR}"
 
 docker build "${SCRIPT_DIR}" --platform=linux/amd64 --tag "${TAG}"
 

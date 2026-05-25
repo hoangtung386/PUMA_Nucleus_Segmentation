@@ -7,13 +7,13 @@ stage1:
 	python -m scripts.run_stage1
 
 inference:
-	python -m scripts.run_inference --input test --output output
+	mkdir -p test && python -m scripts.run_inference --input test --output output
 
 docker-build:
 	docker build -t symbiopan-v8-cellpath .
 
 docker-run:
-	mkdir -p output && \
+	mkdir -p output test && \
 	docker run --rm --shm-size=8g --memory=32g --platform=linux/amd64 \
 		--network none --gpus all \
 		-v "$(PWD)/test/:/input/images/melanoma-whole-slide-image/" \
