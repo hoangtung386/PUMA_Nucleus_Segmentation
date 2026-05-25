@@ -193,4 +193,3 @@ UnifiedPanopticNet
 3. **Progressive training** — FocalTversky ramps epochs 10–16; SC-DFA ramps epochs 15–22.
 
 4. **TTA ×8** — 8 geometric transforms (flip + rot) applied, inverse-transformed, averaged during inference.
-```
