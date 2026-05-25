@@ -1,7 +1,6 @@
 """Virchow2 ViT-H/14 encoder with fine-tuning and multi-block feature extraction."""
 
 import json
-import math
 from typing import Any, List, Tuple
 
 import torch
@@ -153,8 +152,7 @@ class UnifiedPanopticEncoder(nn.Module):
         spatial_list = []
         for feat in intermediate_features:
             feat_no_cls = feat[:, 1:, :]
-            n_tokens = feat_no_cls.shape[1]
-            grid = math.isqrt(n_tokens)
+            grid = img.shape[-2] // 14
             spatial_list.append(feat_no_cls.transpose(1, 2).reshape(-1, feat_no_cls.shape[-1], grid, grid))
         vit_intermediate_tensor = torch.stack(spatial_list, dim=0) if spatial_list else x.unsqueeze(0)
 
