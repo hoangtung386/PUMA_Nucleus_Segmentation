@@ -1,4 +1,4 @@
-.PHONY: preprocess stage1 stage2 inference docker-build docker-run lint clean
+.PHONY: preprocess stage1 inference docker-build docker-run lint clean
 
 preprocess:
 	python -m scripts.run_preprocess
@@ -6,14 +6,11 @@ preprocess:
 stage1:
 	python -m scripts.run_stage1
 
-stage2:
-	python -m scripts.run_stage2
-
 inference:
 	python -m scripts.run_inference --input test --output output
 
 docker-build:
-	docker build -t puma-merged-v22-v4-track2 .
+	docker build -t symbiopan-v8-cellpath .
 
 docker-run:
 	mkdir -p output && \
@@ -21,7 +18,7 @@ docker-run:
 		--network none --gpus all \
 		-v "$(PWD)/test/:/input/images/melanoma-whole-slide-image/" \
 		-v "$(PWD)/output/:/output/" \
-		puma-merged-v22-v4-track2
+		symbiopan-v8-cellpath
 
 lint:
 	python -m ruff check .
