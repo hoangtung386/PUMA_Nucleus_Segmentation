@@ -32,3 +32,4 @@ wandb/
 *.swo
 
 data/raw/
+dataset/

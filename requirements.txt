@@ -1,6 +1,7 @@
 # Core dependencies
 torch>=2.0
-timm==0.9.6
+timm>=1.0.3
+transformers>=4.36.0
 huggingface_hub
 albumentations
 opencv-python-headless
@@ -8,7 +9,6 @@ scipy
 numpy>=2.0,<2.1
 tifffile
 tqdm
-cellpose
 bitsandbytes
 
 # Notebook requirements

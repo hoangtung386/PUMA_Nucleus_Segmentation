@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "symbiopan"
-version = "7.0.0"
-description = "PUMA Grand Challenge Track 2 — Panoptic Segmentation for Melanoma"
+version = "8.0.0"
+description = "CellPath — PUMA Grand Challenge Track 2 Panoptic Segmentation (v8)"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0",
-    "timm==0.9.6",
+    "timm>=1.0.3",
+    "transformers>=4.36.0",
     "huggingface_hub",
     "albumentations",
     "opencv-python-headless",
@@ -19,7 +20,6 @@ dependencies = [
     "tifffile",
     "tqdm",
     "Pillow",
-    "cellpose",
     "bitsandbytes",
 ]
 
