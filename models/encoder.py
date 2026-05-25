@@ -2,6 +2,7 @@
 
 from typing import Any, List, Tuple
 
+import math
 import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModel, ViTConfig
@@ -139,12 +140,12 @@ class UnifiedPanopticEncoder(nn.Module):
         elif hasattr(self.vit_model, "ln_f"):
             x = self.vit_model.ln_f(x)
 
-        patch_size = 14
-        gh, gw = img.shape[-2] // patch_size, img.shape[-1] // patch_size
         spatial_list = []
         for feat in intermediate_features:
             feat_no_cls = feat[:, 1:, :]
-            spatial_list.append(feat_no_cls.transpose(1, 2).reshape(-1, feat_no_cls.shape[-1], gh, gw))
+            n_tokens = feat_no_cls.shape[1]
+            grid = math.isqrt(n_tokens)
+            spatial_list.append(feat_no_cls.transpose(1, 2).reshape(-1, feat_no_cls.shape[-1], grid, grid))
         vit_intermediate_tensor = torch.stack(spatial_list, dim=0) if spatial_list else x.unsqueeze(0)
 
         return x, cnn_features, vit_intermediate_tensor
