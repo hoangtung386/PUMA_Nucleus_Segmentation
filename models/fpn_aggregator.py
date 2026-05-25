@@ -36,11 +36,11 @@ class HierarchicalFPN(nn.Module):
         if len(cnn_features) != len(self.latents):
             raise ValueError(f"Expected {len(self.latents)} CNN feature maps, got {len(cnn_features)}")
 
-        patch_tokens = vit_tokens[:, 1:, :] if vit_tokens.shape[1] > 1 else vit_tokens
-        b, n, c = patch_tokens.shape
+        b, n, c = vit_tokens.shape
         grid_size = int(round(n**0.5))
-        if grid_size * grid_size != n:
-            raise ValueError(f"ViT token count {n} is not square after removing CLS token")
+        expected = grid_size * grid_size
+        patch_tokens = vit_tokens[:, -expected:, :] if n >= expected else vit_tokens
+        b, n, c = patch_tokens.shape
 
         vit_2d = patch_tokens.transpose(1, 2).reshape(b, c, grid_size, grid_size)
         vit_2d = self.vit_proj(vit_2d)
