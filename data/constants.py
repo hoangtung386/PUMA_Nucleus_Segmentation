@@ -46,7 +46,6 @@ RARE_NUCLEI_SAMPLE_BONUS = {2: 6.0, 4: 4.0, 5: 8.0, 8: 5.0, 9: 8.0}
 
 TISSUE_CLASS_WEIGHTS = [1.0, 4.0, 0.8, 3.0, 7.0]
 NUCLEI_CLASS_WEIGHTS = [0.8, 1.0, 7.0, 2.5, 4.5, 8.0, 2.0, 2.5, 5.5, 8.0]
-STAGE2_NUCLEI_WEIGHTS = [0.6, 0.9, 9.0, 2.5, 5.0, 10.0, 2.0, 2.5, 6.0, 10.0]
 
 LOSS_MULTIPLIERS = [2.5, 1.0, 2.8, 1.0]
 HV_GRAD_THRESHOLD = 0.35
@@ -55,3 +54,27 @@ NORMALIZATION_MEAN = [0.485, 0.456, 0.406]
 NORMALIZATION_STD = [0.229, 0.224, 0.225]
 
 IGNORE_INDEX = 255
+
+SITE_NAMES = [
+    "primary",
+    "lymph_node",
+    "brain",
+    "bone",
+    "soft_tissue",
+    "liver",
+    "lung",
+    "gastrointestinal",
+    "skin",
+]
+
+SITE_MAP = {
+    "primary": 0,
+    "lymph_node": 1,
+    "brain": 2,
+    "bone": 3,
+    "soft_tissue": 4,
+    "liver": 5,
+    "lung": 6,
+    "gastrointestinal": 7,
+    "skin": 8,
+}

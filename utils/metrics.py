@@ -4,6 +4,8 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import torch
 
+from data.constants import RARE_NUCLEI_IDS, RARE_TISSUE_IDS
+
 EPS = 1e-8
 
 
@@ -111,18 +113,8 @@ class PUMAMetrics:
         out.update(self.calculate_semantic_metrics(preds["nc"], targets["nuclei_nc"], 10, "nuclei"))
         tissue_dice = [out.get(f"tissue_dice_{i}", math.nan) for i in range(5)]
         nuclei_dice = [out.get(f"nuclei_dice_{i}", math.nan) for i in range(10)]
-        rare_tissue_dice = [
-            out.get("tissue_dice_1", math.nan),  # blood vessel
-            out.get("tissue_dice_3", math.nan),  # epidermis
-            out.get("tissue_dice_4", math.nan),  # necrosis
-        ]
-        rare_nuclei_dice = [
-            out.get("nuclei_dice_2", math.nan),  # plasma cell
-            out.get("nuclei_dice_4", math.nan),  # melanophage
-            out.get("nuclei_dice_5", math.nan),  # neutrophil
-            out.get("nuclei_dice_8", math.nan),  # endothelium
-            out.get("nuclei_dice_9", math.nan),  # apoptosis
-        ]
+        rare_tissue_dice = [out.get(f"tissue_dice_{i}", math.nan) for i in sorted(RARE_TISSUE_IDS)]
+        rare_nuclei_dice = [out.get(f"nuclei_dice_{i}", math.nan) for i in sorted(RARE_NUCLEI_IDS)]
         rare_dice = rare_tissue_dice + rare_nuclei_dice
         out["avg_tissue_dice"] = self._nan_to_zero(self._nanmean(tissue_dice))
         out["avg_nuclei_dice"] = self._nan_to_zero(self._nanmean(nuclei_dice))

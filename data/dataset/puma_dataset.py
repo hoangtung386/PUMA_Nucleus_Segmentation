@@ -1,22 +1,58 @@
+import functools
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from data.constants import (
-    IGNORE_INDEX,
-    NORMALIZATION_MEAN,
-    NORMALIZATION_STD,
-)
+from data.constants import IGNORE_INDEX, NORMALIZATION_MEAN, NORMALIZATION_STD, SITE_MAP
 from data.dataset.sampling import compute_all_sample_weights
 from training.logging_utils import logger
 
 
+_CONTEXT_CACHE: dict[str, np.ndarray] = {}
+_CONTEXT_ROI_SIZE = 320
+
+
+def _load_context_roi(context_dir: Path, source_name: str) -> Optional[np.ndarray]:
+    if source_name in _CONTEXT_CACHE:
+        return _CONTEXT_CACHE[source_name]
+    for ext in (".tif", ".tiff", ".png", ".jpg"):
+        path = context_dir / f"{source_name}_context{ext}"
+        if path.exists():
+            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if img is not None:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = cv2.resize(img, (_CONTEXT_ROI_SIZE, _CONTEXT_ROI_SIZE), interpolation=cv2.INTER_LINEAR)
+                _CONTEXT_CACHE[source_name] = img.astype(np.float32)
+                return _CONTEXT_CACHE[source_name]
+            break
+    for ext in (".tif", ".tiff"):
+        path = context_dir / f"{source_name}_context{ext}"
+        if path.exists():
+            try:
+                import tifffile
+                img = tifffile.imread(str(path))
+                if img.ndim == 3 and img.shape[0] in (3, 4):
+                    img = img.transpose(1, 2, 0)
+                if img.shape[-1] == 4:
+                    img = img[..., :3]
+                if img.dtype != np.uint8:
+                    img = img.astype(np.float32)
+                    img = (img - img.min()) / (img.max() + 1e-6) * 255.0
+                    img = img.clip(0, 255).astype(np.uint8)
+                img = cv2.resize(img, (_CONTEXT_ROI_SIZE, _CONTEXT_ROI_SIZE), interpolation=cv2.INTER_LINEAR)
+                _CONTEXT_CACHE[source_name] = img.astype(np.float32)
+                return _CONTEXT_CACHE[source_name]
+            except Exception:
+                pass
+    return None
+
+
 def puma_tissue_to_internal(tissue_puma: np.ndarray) -> np.ndarray:
-    """Convert stored PUMA tissue IDs 0..5 into targets 0..4 plus ignore=255."""
     out = tissue_puma.astype(np.int64).copy()
     out[out == 0] = IGNORE_INDEX
     valid = out != IGNORE_INDEX
@@ -25,49 +61,46 @@ def puma_tissue_to_internal(tissue_puma: np.ndarray) -> np.ndarray:
 
 
 def internal_tissue_to_puma(tissue_internal: np.ndarray) -> np.ndarray:
-    """Convert model predictions 0..4 back to PUMA tissue IDs 1..5."""
     return tissue_internal.astype(np.uint8) + 1
 
 
 def source_name_from_base(base_name: str) -> str:
-    """Original ROI/source name. Rare augmented samples have suffix __rareXX_..."""
     return str(base_name).split("__rare", 1)[0]
 
 
+def infer_site_id(source_name: str) -> int:
+    name_lower = source_name.lower()
+    if "primary" in name_lower:
+        return 0
+    if "lymph" in name_lower:
+        return 1
+    if "brain" in name_lower:
+        return 2
+    if "bone" in name_lower:
+        return 3
+    if "soft_tissue" in name_lower or "softtissue" in name_lower:
+        return 4
+    if "liver" in name_lower:
+        return 5
+    if "lung" in name_lower:
+        return 6
+    if "gastro" in name_lower or "intestinal" in name_lower:
+        return 7
+    if "skin" in name_lower and "primary" not in name_lower:
+        return 8
+    return 1
+
+
 class PUMADataset(Dataset):
-    """
-    Loader for rare-focused Version-4 processed 1024 data.
-
-    Expected folders:
-        images/*.npy          RGB uint8, HWC
-        tissue_sem/*.npy      PUMA tissue IDs: 0 background, 1..5 tissue classes
-        nuclei_nc/*.npy       nuclei IDs: 0..9, 255 non-nucleus
-        nuclei_hv/*.npy       [2,H,W] or [H,W,2] float HV map
-        cellpose_flows/*.npy  [2,H,W] or [H,W,2] float flow map, optional
-        sample_metadata.json  optional metadata from preprocess.py
-
-    Important leakage control:
-        self.source_names maps every rare crop back to its original image.
-    """
-
     def __init__(
         self,
         data_dir: str | Path,
         transforms: Callable[..., dict] | None = None,
-        zero_cellpose_prob: float = 0.0,
+        context_dir: str | Path | None = None,
+        use_context: bool = False,
     ) -> None:
-        """Initialize the PUMADataset.
-
-        Args:
-            data_dir: Path to the processed data directory containing images/,
-                tissue_sem/, nuclei_nc/, nuclei_hv/, and cellpose_flows/ subdirs.
-            transforms: Optional albumentations transform pipeline.
-            zero_cellpose_prob: Probability of zeroing out the cellpose flow
-                for regularization.
-        """
         self.data_dir = Path(data_dir)
         self.transforms = transforms
-        self.zero_cellpose_prob = float(zero_cellpose_prob)
         self.image_files = sorted((self.data_dir / "images").glob("*.npy"))
         if not self.image_files:
             raise FileNotFoundError(f"No .npy files found in {self.data_dir / 'images'}")
@@ -76,13 +109,18 @@ class PUMADataset(Dataset):
         self.source_names = [self.get_source_name(i) for i in range(len(self.image_files))]
         self.is_original = [not self.is_rare_augmented(i) for i in range(len(self.image_files))]
         self._validate_files()
+        self.use_context = use_context
+        if use_context:
+            if context_dir is None:
+                context_dir = Path(data_dir).parent / "Dataset" / "PUMA" / "01_training_dataset_tif_context_ROIs"
+            self.context_dir = Path(context_dir)
+            if not self.context_dir.is_dir():
+                logger.warning("Context dir %s does not exist; disabling context ROI", self.context_dir)
+                self.use_context = False
+            else:
+                logger.info("Context ROIs enabled from %s", self.context_dir)
 
     def _load_metadata(self) -> dict[str, Any]:
-        """Load sample metadata from sample_metadata.json if it exists.
-
-        Returns:
-            dict mapping base_name to its metadata row.
-        """
         path = self.data_dir / "sample_metadata.json"
         out = {}
         if not path.exists():
@@ -99,12 +137,6 @@ class PUMADataset(Dataset):
         return out
 
     def _validate_files(self) -> None:
-        """Verify that all required annotation files exist for each sample.
-
-        Raises:
-            FileNotFoundError: If any required files are missing (up to 10
-                reported).
-        """
         required_dirs = ["tissue_sem", "nuclei_nc", "nuclei_hv"]
         missing = []
         for base in self.base_names:
@@ -121,42 +153,17 @@ class PUMADataset(Dataset):
             raise FileNotFoundError(f"Processed dataset is incomplete. Missing files include:\n{preview}")
 
     def __len__(self) -> int:
-        """Return the total number of samples in the dataset."""
         return len(self.image_files)
 
     def get_base_name(self, idx: int) -> str:
-        """Return the base filename (without extension) for the given index.
-
-        Args:
-            idx: Sample index.
-
-        Returns:
-            Stem of the image file name.
-        """
         return self.image_files[int(idx)].stem
 
     def get_source_name(self, idx: int) -> str:
-        """Return the original ROI/source name for the given index.
-
-        Args:
-            idx: Sample index.
-
-        Returns:
-            Source name from metadata, or inferred from the base name.
-        """
         base_name = self.get_base_name(idx)
         meta = self.metadata.get(base_name, {})
         return str(meta.get("source_name") or source_name_from_base(base_name))
 
     def is_rare_augmented(self, idx: int) -> bool:
-        """Check whether the sample at the given index is a rare-class crop.
-
-        Args:
-            idx: Sample index.
-
-        Returns:
-            True if the sample is a rare-augmented crop.
-        """
         base_name = self.get_base_name(idx)
         meta = self.metadata.get(base_name, {})
         if "is_rare_augmented" in meta:
@@ -164,44 +171,13 @@ class PUMADataset(Dataset):
         return "__rare" in base_name
 
     def get_split_metadata(self) -> dict[str, Any]:
-        """Return metadata dictionaries for all samples.
-
-        Returns:
-            dict with keys 'source_names', 'is_original', and 'base_names',
-            each a list over all dataset indices.
-        """
         return {
             "source_names": [self.get_source_name(i) for i in range(len(self))],
             "is_original": [not self.is_rare_augmented(i) for i in range(len(self))],
             "base_names": [self.get_base_name(i) for i in range(len(self))],
         }
 
-    def _infer_site_type(self, base_name: str) -> str:
-        """Infer tissue site type (primary/metastatic) from the source name.
-
-        Args:
-            base_name: Source name string.
-
-        Returns:
-            'primary' or 'metastatic'.
-        """
-        name_lower = base_name.lower()
-        if "primary" in name_lower:
-            return "primary"
-        if "metastatic" in name_lower or "metastasis" in name_lower or "meta" in name_lower:
-            return "metastatic"
-        return "metastatic"
-
     def compute_sample_weights(self, indices: list[int] | None = None) -> list[float]:
-        """Compute weighted sampling probabilities focusing on rare classes.
-
-        Args:
-            indices: Optional list of sample indices to compute weights for.
-                If None, all samples are used.
-
-        Returns:
-            list of float weights, one per index.
-        """
         if indices is None:
             indices = list(range(len(self)))
         base_names = [self.get_base_name(i) for i in indices]
@@ -210,19 +186,6 @@ class PUMADataset(Dataset):
 
     @staticmethod
     def _ensure_hwc_2ch(x: np.ndarray, h: int, w: int) -> np.ndarray:
-        """Validate and convert a vector map to [H, W, 2] format.
-
-        Args:
-            x: Input array, either [2, H, W] or [H, W, 2].
-            h: Expected height.
-            w: Expected width.
-
-        Returns:
-            Array in [H, W, 2] float32 format.
-
-        Raises:
-            RuntimeError: If the array has unexpected shape or channel count.
-        """
         if x.ndim != 3:
             raise RuntimeError(f"Expected 3D vector map, got shape={x.shape}")
         if x.shape[0] == 2:
@@ -234,31 +197,9 @@ class PUMADataset(Dataset):
         return x.astype(np.float32, copy=False)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        """Load and return a sample from the dataset.
-
-        Loads the image, tissue semantic mask, nuclei classification mask,
-        nuclei HV map, and cellpose flow from disk. Applies transforms if
-        configured, normalizes the image, and converts arrays to tensors.
-
-        Args:
-            idx: Sample index.
-
-        Returns:
-            dict containing:
-                - image: [3, H, W] normalized float32 tensor.
-                - tissue_sem: [H, W] long tensor of internal tissue IDs.
-                - nuclei_np: [H, W] long binary mask (nucleus present).
-                - nuclei_nc: [H, W] long tensor of nuclei class IDs.
-                - nuclei_hv: [2, H, W] float32 HV map.
-                - cellpose_flow: [2, H, W] float32 flow map.
-                - site_type: str, 'primary' or 'metastatic'.
-                - base_name: str, stem of the sample file.
-                - source_name: str, original ROI name.
-                - is_rare_augmented: bool.
-        """
         idx = int(idx)
         base_name = self.get_base_name(idx)
-        site_type = self._infer_site_type(self.get_source_name(idx))
+        site_id = infer_site_id(self.get_source_name(idx))
 
         image = np.load(self.data_dir / "images" / f"{base_name}.npy")
         if image.ndim != 3 or image.shape[-1] != 3:
@@ -279,28 +220,16 @@ class PUMADataset(Dataset):
         nuclei_hv = np.load(self.data_dir / "nuclei_hv" / f"{base_name}.npy")
         nuclei_hv = self._ensure_hwc_2ch(nuclei_hv, h, w)
 
-        cp_path = self.data_dir / "cellpose_flows" / f"{base_name}.npy"
-        if cp_path.exists():
-            cellpose_flow = np.load(cp_path)
-            cellpose_flow = self._ensure_hwc_2ch(cellpose_flow, h, w)
-        else:
-            cellpose_flow = np.zeros((h, w, 2), dtype=np.float32)
-
-        if self.zero_cellpose_prob > 0.0 and np.random.rand() < self.zero_cellpose_prob:
-            cellpose_flow = np.zeros_like(cellpose_flow, dtype=np.float32)
-
         if self.transforms is not None:
             augmented = self.transforms(
                 image=image,
                 tissue_mask=tissue_internal,
                 nuclei_mask=nuclei_nc,
-                cp_flow=cellpose_flow,
                 hv_map=nuclei_hv,
             )
             image = augmented["image"]
             tissue_internal = augmented["tissue_mask"]
             nuclei_nc = augmented["nuclei_mask"]
-            cellpose_flow = augmented["cp_flow"]
             nuclei_hv = augmented["hv_map"]
 
         if isinstance(image, np.ndarray):
@@ -313,20 +242,28 @@ class PUMADataset(Dataset):
         nuclei_nc = torch.as_tensor(nuclei_nc, dtype=torch.long)
         nuclei_np = (nuclei_nc != IGNORE_INDEX).long()
 
-        if isinstance(cellpose_flow, np.ndarray):
-            cellpose_flow = torch.from_numpy(cellpose_flow.transpose(2, 0, 1)).float()
         if isinstance(nuclei_hv, np.ndarray):
             nuclei_hv = torch.from_numpy(nuclei_hv.transpose(2, 0, 1)).float()
 
-        return {
+        sample = {
             "image": image,
             "tissue_sem": tissue_internal,
             "nuclei_np": nuclei_np,
             "nuclei_nc": nuclei_nc,
             "nuclei_hv": nuclei_hv,
-            "cellpose_flow": cellpose_flow,
-            "site_type": site_type,
+            "site_id": site_id,
             "base_name": base_name,
             "source_name": self.get_source_name(idx),
             "is_rare_augmented": self.is_rare_augmented(idx),
         }
+
+        if self.use_context:
+            source_name = self.get_source_name(idx)
+            ctx = _load_context_roi(self.context_dir, source_name)
+            if ctx is not None:
+                mean = np.array(NORMALIZATION_MEAN, dtype=np.float32).reshape(1, 1, 3)
+                std = np.array(NORMALIZATION_STD, dtype=np.float32).reshape(1, 1, 3)
+                ctx = (ctx / 255.0 - mean) / std
+                sample["context_roi"] = torch.from_numpy(ctx.transpose(2, 0, 1)).float()
+
+        return sample

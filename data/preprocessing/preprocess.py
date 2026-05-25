@@ -1,4 +1,4 @@
-"""Rare-class-focused preprocessing for PUMA Track 2."""
+"""Preprocessing for PUMA Track 2 (Cellpose flow generation removed)."""
 
 import json
 import os
@@ -9,7 +9,6 @@ from typing import Iterable, List, Tuple
 import cv2
 import numpy as np
 import tifffile as tiff
-import torch
 from tqdm import tqdm
 
 from configs import PATHS, PREPROCESS_DEFAULT_CONFIG
@@ -21,7 +20,7 @@ from data.constants import (
     RARE_TISSUE_IDS_PUMA,
     RARE_TISSUE_SAMPLE_BONUS,
 )
-from data.preprocessing.flow_generator import CellposeFlowGenerator, compute_hv_map
+from data.preprocessing.flow_generator import compute_hv_map
 from data.preprocessing.geojson_parser import find_annotation_file, parse_geojson_masks
 from training.logging_utils import logger
 
@@ -29,17 +28,6 @@ cfg = PREPROCESS_DEFAULT_CONFIG
 
 
 def read_rgb_tif(path: Path) -> np.ndarray:
-    """Read a TIFF file and return a uint8 RGB image in HWC format.
-
-    Handles single-channel, 3-channel, and 4-channel TIFFs, and normalizes
-    non-uint8 data to [0, 255].
-
-    Args:
-        path: Path to the TIFF file.
-
-    Returns:
-        uint8 array of shape [H, W, 3].
-    """
     image = tiff.imread(str(path))
     if image.ndim == 2:
         image = np.stack([image, image, image], axis=-1)
@@ -56,20 +44,6 @@ def read_rgb_tif(path: Path) -> np.ndarray:
 
 
 def resize_all(image, tissue, nuclei, inst, size: int):
-    """Resize image and all annotation masks to the target size.
-
-    Uses INTER_LINEAR for the image and INTER_NEAREST for masks.
-
-    Args:
-        image: uint8 RGB array [H, W, 3].
-        tissue: uint8 tissue mask [H, W].
-        nuclei: uint8 nuclei mask [H, W].
-        inst: int32 instance mask [H, W].
-        size: Target height and width.
-
-    Returns:
-        Tuple of (image, tissue, nuclei, inst) all resized.
-    """
     if image.shape[0] == size and image.shape[1] == size:
         return image, tissue, nuclei, inst
     image_r = cv2.resize(image, (size, size), interpolation=cv2.INTER_LINEAR)
@@ -80,22 +54,6 @@ def resize_all(image, tissue, nuclei, inst, size: int):
 
 
 def translate_to_center(image, tissue, nuclei, inst, center_xy, out_size, jitter_px):
-    """Translate an image crop so that a given center point is at the center.
-
-    Applies an affine translation with optional random jitter.
-
-    Args:
-        image: uint8 RGB array [H, W, 3].
-        tissue: uint8 tissue mask [H, W].
-        nuclei: uint8 nuclei mask [H, W].
-        inst: int32 instance mask [H, W].
-        center_xy: (cx, cy) target center coordinates.
-        out_size: Output spatial size.
-        jitter_px: Maximum random jitter in pixels (applied per axis).
-
-    Returns:
-        Tuple of (image, tissue, nuclei, inst) after translation.
-    """
     h, w = image.shape[:2]
     cx, cy = center_xy
     jx = random.randint(-jitter_px, jitter_px) if jitter_px > 0 else 0
@@ -143,18 +101,6 @@ def translate_to_center(image, tissue, nuclei, inst, center_xy, out_size, jitter
 def component_centers(
     mask: np.ndarray, class_ids: Iterable[int], max_per_class: int = 2
 ) -> List[Tuple[int, Tuple[float, float], int]]:
-    """Find connected component centroids for specified class IDs.
-
-    Components are sorted by area (largest first) and capped per class.
-
-    Args:
-        mask: Integer segmentation mask [H, W].
-        class_ids: Iterable of class IDs to search for.
-        max_per_class: Maximum number of components to return per class.
-
-    Returns:
-        list of (class_id, (cx, cy), area) tuples.
-    """
     out: List[Tuple[int, Tuple[float, float], int]] = []
     for cls in class_ids:
         binary = (mask == cls).astype(np.uint8)
@@ -175,19 +121,8 @@ def component_centers(
 def sample_weight_from_masks(
     tissue: np.ndarray, nuclei: np.ndarray, is_rare_augmented: bool
 ) -> Tuple[float, List[int], List[int]]:
-    """Compute sample weight and list rare class IDs present in the masks.
-
-    Args:
-        tissue: uint8 tissue semantic mask [H, W].
-        nuclei: uint8 nuclei classification mask [H, W].
-        is_rare_augmented: Whether this is a rare-class augmented crop.
-
-    Returns:
-        Tuple of (weight, rare_tissue_ids, rare_nuclei_ids).
-    """
     tissue_present = sorted(int(x) for x in np.unique(tissue) if int(x) in RARE_TISSUE_IDS_PUMA)
     nuclei_present = sorted(int(x) for x in np.unique(nuclei) if int(x) in RARE_NUCLEI_IDS)
-
     weight = 1.0
     for cls in tissue_present:
         weight += RARE_TISSUE_SAMPLE_BONUS.get(cls, 0.0)
@@ -198,44 +133,22 @@ def sample_weight_from_masks(
     return float(weight), tissue_present, nuclei_present
 
 
-def save_processed_sample(
-    base_name, image, tissue, nuclei, inst, flow_generator, metadata, is_rare_augmented, source_name
-):
-    """Save a processed sample to disk and append its metadata.
-
-    Computes the HV map and cellpose flow, writes numpy arrays for image,
-    tissue, nuclei, HV, and flow. Appends a metadata dict to the provided list.
-
-    Args:
-        base_name: Output base filename (without extension).
-        image: uint8 RGB array [H, W, 3].
-        tissue: uint8 tissue mask [H, W].
-        nuclei: uint8 nuclei mask [H, W].
-        inst: int32 instance mask [H, W].
-        flow_generator: CellposeFlowGenerator instance.
-        metadata: List to which a metadata dict is appended.
-        is_rare_augmented: Whether this is a rare-class augmented crop.
-        source_name: Original source ROI name.
-    """
+def save_processed_sample(base_name, image, tissue, nuclei, inst, metadata, is_rare_augmented, source_name):
     out_dir = PATHS.data_dir
     paths = {
         "image": out_dir / "images" / f"{base_name}.npy",
         "tissue": out_dir / "tissue_sem" / f"{base_name}.npy",
         "nuclei": out_dir / "nuclei_nc" / f"{base_name}.npy",
         "hv": out_dir / "nuclei_hv" / f"{base_name}.npy",
-        "cp": out_dir / "cellpose_flows" / f"{base_name}.npy",
     }
-
     weight, rare_tissue, rare_nuclei = sample_weight_from_masks(tissue, nuclei, is_rare_augmented)
 
     if not (cfg.skip_existing and all(p.exists() for p in paths.values())):
         hv = compute_hv_map(inst)
-        cp_flow = flow_generator.make_flow(image)
         np.save(paths["image"], image.astype(np.uint8))
         np.save(paths["tissue"], tissue.astype(np.uint8))
         np.save(paths["nuclei"], nuclei.astype(np.uint8))
         np.save(paths["hv"], hv)
-        np.save(paths["cp"], cp_flow)
 
     metadata.append(
         {
@@ -249,18 +162,7 @@ def save_processed_sample(
     )
 
 
-def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metadata: List[dict]):
-    """Process a single ROI image: read, parse annotations, resize, and save.
-
-    Also generates rare-class centered crops if configured in the global
-    PREPROCESS_DEFAULT_CONFIG.
-
-    Args:
-        img_path: Path to the input TIFF image.
-        flow_generator: CellposeFlowGenerator for flow computation.
-        metadata: List to which metadata dicts are appended for each saved
-            sample (original and optional rare crops).
-    """
+def process_one_roi(img_path: Path, metadata: List[dict]):
     raw_dir = PATHS.raw_dir
     tissue_geojson_dir = raw_dir / "01_training_dataset_geojson_tissue"
     nuclei_geojson_dir = raw_dir / "01_training_dataset_geojson_nuclei"
@@ -284,7 +186,6 @@ def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metad
         tissue=tissue_1024,
         nuclei=nuclei_1024,
         inst=inst_1024,
-        flow_generator=flow_generator,
         metadata=metadata,
         is_rare_augmented=False,
         source_name=base,
@@ -327,7 +228,6 @@ def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metad
             tissue=tissue_t,
             nuclei=nuclei_t,
             inst=inst_t,
-            flow_generator=flow_generator,
             metadata=metadata,
             is_rare_augmented=True,
             source_name=base,
@@ -335,13 +235,6 @@ def process_one_roi(img_path: Path, flow_generator: CellposeFlowGenerator, metad
 
 
 def main() -> None:
-    """Run the full preprocessing pipeline for PUMA Track 2.
-
-    Reads all TIFF images from the raw directory, parses GeoJSON annotations,
-    resizes to the configured image size, generates HV maps and cellpose flows,
-    creates rare-class centered crops, and writes processed data along with
-    sample_metadata.json to the output directory.
-    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from threading import Lock
 
@@ -352,7 +245,7 @@ def main() -> None:
     image_dir = raw_dir / "01_training_dataset_tif_ROIs"
 
     out_dir = PATHS.data_dir
-    for subdir in ["images", "tissue_sem", "nuclei_nc", "nuclei_hv", "cellpose_flows"]:
+    for subdir in ["images", "tissue_sem", "nuclei_nc", "nuclei_hv"]:
         (out_dir / subdir).mkdir(parents=True, exist_ok=True)
 
     img_files = sorted(image_dir.glob("*.tif")) + sorted(image_dir.glob("*.tiff"))
@@ -364,23 +257,20 @@ def main() -> None:
     logger.info("Output: %s", out_dir)
     logger.info("Images: %d", len(img_files))
     logger.info("Rare crops: enabled=%s max_per_image=%d", cfg.make_rare_centered_crops, cfg.max_rare_crops_per_image)
-    logger.info("Cellpose: generate_cellpose_flows=%s", cfg.generate_cellpose_flows)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    flow_generator = CellposeFlowGenerator(cfg.generate_cellpose_flows, cfg.cellpose_model_type, device=device)
     metadata: List[dict] = []
     meta_lock = Lock()
     num_workers = min(os.cpu_count() or 4, 8)
 
     def _process_one(img_path):
         local_meta: List[dict] = []
-        process_one_roi(img_path, flow_generator, local_meta)
+        process_one_roi(img_path, local_meta)
         with meta_lock:
             metadata.extend(local_meta)
 
     with ThreadPoolExecutor(max_workers=num_workers) as pool:
         futures = [pool.submit(_process_one, p) for p in img_files]
-        for f in tqdm(as_completed(futures), total=len(futures), desc="Preprocess rare-focused"):
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Preprocess"):
             f.result()
 
     metadata_path = out_dir / "sample_metadata.json"
@@ -389,8 +279,4 @@ def main() -> None:
             json.dump(metadata, f, indent=2)
 
     n_rare_aug = sum(1 for m in metadata if m["is_rare_augmented"])
-    logger.info("Done")
-    logger.info("Processed samples in metadata: %d", len(metadata))
-    logger.info("Rare augmented samples: %d", n_rare_aug)
-    logger.info("Metadata: %s", metadata_path)
-    logger.info("Stored PUMA tissue IDs in tissue_sem; dataset converts background 0 to ignore 255.")
+    logger.info("Done: %d processed, %d rare-augmented", len(metadata), n_rare_aug)

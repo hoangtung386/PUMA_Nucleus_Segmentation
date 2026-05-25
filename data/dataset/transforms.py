@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any
 
 import albumentations as A
@@ -6,7 +7,6 @@ import numpy as np
 
 
 def _fix_vector_field(vec: np.ndarray | None, replay: dict[str, Any]) -> np.ndarray | None:
-    """Correct x/y vector directions after flips and 90-degree rotations."""
     if vec is None:
         return vec
     for tr in replay.get("transforms", []):
@@ -33,77 +33,44 @@ def _fix_vector_field(vec: np.ndarray | None, replay: dict[str, Any]) -> np.ndar
     return vec
 
 
-class VectorSafeCompose:
-    """Wrapper around ReplayCompose that corrects vector fields after
-    flips and rotations.
-    """
-
-    def __init__(self, transforms: list[Any], additional_targets: dict[str, str]) -> None:
-        """Initialize VectorSafeCompose.
-
-        Args:
-            transforms: List of albumentations transforms.
-            additional_targets: dict of additional target names to their types.
-        """
-        self.aug = A.ReplayCompose(transforms, additional_targets=additional_targets)
-
-    def __call__(self, **kwargs: object) -> dict[str, Any]:
-        """Apply transforms and fix vector field orientations.
-
-        Args:
-            **kwargs: Keyword arguments passed to the compose pipeline
-                (image, tissue_mask, nuclei_mask, cp_flow, hv_map).
-
-        Returns:
-            dict of augmented data with corrected vector fields.
-        """
-        out = self.aug(**kwargs)
-        replay = out.get("replay", {})
-        out["cp_flow"] = _fix_vector_field(out.get("cp_flow"), replay)
-        out["hv_map"] = _fix_vector_field(out.get("hv_map"), replay)
-        out.pop("replay", None)
-        return out
-
-
-def get_train_transforms(image_size: int = 1024) -> VectorSafeCompose:
-    """Return training data augmentation pipeline.
-
-    Includes resize, horizontal/vertical flips, and random 90-degree rotations
-    with proper vector field correction.
-
-    Args:
-        image_size: Target spatial size (height and width).
-
-    Returns:
-        VectorSafeCompose instance configured for training.
-    """
-    return VectorSafeCompose(
-        [
+class TrainTransform:
+    def __init__(self, image_size: int, use_stain_aug: bool = False) -> None:
+        spatial = [
             A.Resize(height=image_size, width=image_size, interpolation=cv2.INTER_LINEAR),
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
-        ],
-        additional_targets={
-            "tissue_mask": "mask",
-            "nuclei_mask": "mask",
-            "cp_flow": "image",
-            "hv_map": "image",
-        },
-    )
+        ]
+        pixel = [
+            A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.5),
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=10, p=0.5),
+        ]
+        if use_stain_aug:
+            pixel.append(A.HEStain(p=0.5))
+        self.spatial = A.ReplayCompose(
+            spatial,
+            additional_targets={
+                "tissue_mask": "mask",
+                "nuclei_mask": "mask",
+                "hv_map": "image",
+            },
+        )
+        self.pixel = A.Compose(pixel)
+
+    def __call__(self, **kwargs: object) -> dict[str, Any]:
+        out = self.spatial(**kwargs)
+        replay = out.pop("replay", {})
+        out["hv_map"] = _fix_vector_field(out.get("hv_map"), replay)
+        img = self.pixel(image=out["image"])["image"]
+        out["image"] = img
+        return out
+
+
+def get_train_transforms(image_size: int = 1024, use_stain_aug: bool = False) -> TrainTransform:
+    return TrainTransform(image_size, use_stain_aug=use_stain_aug)
 
 
 def get_val_transforms(image_size: int = 1024) -> A.Compose:
-    """Return validation data transformation pipeline.
-
-    Only resizes to the target size without random augmentations.
-
-    Args:
-        image_size: Target spatial size (height and width).
-
-    Returns:
-        A.Compose instance configured for validation.
-    """
     return A.Compose(
         [
             A.Resize(height=image_size, width=image_size, interpolation=cv2.INTER_LINEAR),
@@ -111,7 +78,6 @@ def get_val_transforms(image_size: int = 1024) -> A.Compose:
         additional_targets={
             "tissue_mask": "mask",
             "nuclei_mask": "mask",
-            "cp_flow": "image",
             "hv_map": "image",
         },
     )
