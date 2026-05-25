@@ -42,6 +42,7 @@ class UnifiedPanopticNet(nn.Module):
             self.context_encoder = ContextEncoder(output_dim=256, output_mode="global")
             self.context_fusion = ContextFusionModule(context_dim=256, fpn_dim=256)
 
+        self.site_embed = nn.Embedding(9, 256)
         self.sc_dfa = SCDFA(num_tissue_classes=num_tissue, num_nuclei_classes=num_nuclei)
         self.use_sc_dfa = False
         self.lambda_sc_dfa = 0.0
@@ -71,6 +72,11 @@ class UnifiedPanopticNet(nn.Module):
         if self.use_context_encoder and context_roi is not None:
             ctx_desc = self.context_encoder(context_roi)
             fpn_feats = self.context_fusion(fpn_feats, ctx_desc)
+
+        if site_ids is not None:
+            site_bias = self.site_embed(site_ids).unsqueeze(-1).unsqueeze(-1)
+            for k in fpn_feats:
+                fpn_feats[k] = fpn_feats[k] + site_bias
 
         tissue_logits, np_logits, nc_logits, hv_logits, boundary_map = self.decoders(
             fpn_feats, low_level_feat, vit_intermediate

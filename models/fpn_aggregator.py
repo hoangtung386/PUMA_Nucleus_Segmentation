@@ -15,15 +15,14 @@ class HierarchicalFPN(nn.Module):
         self.fpn_dim = fpn_dim
         self.latents = nn.ModuleList([nn.Conv2d(int(dim), fpn_dim, 1) for dim in cnn_dims])
         self.vit_proj = nn.Conv2d(vit_dim, fpn_dim, 1)
-        self.vit_intermediate_projs = nn.ModuleList([nn.Conv2d(vit_dim, fpn_dim, 1) for _ in range(4)])
         self.smooth4 = nn.Conv2d(fpn_dim, fpn_dim, 3, padding=1)
         self.smooth3 = nn.Conv2d(fpn_dim, fpn_dim, 3, padding=1)
         self.smooth2 = nn.Conv2d(fpn_dim, fpn_dim, 3, padding=1)
         self.smooth1 = nn.Conv2d(fpn_dim, fpn_dim, 3, padding=1)
 
         self.low_level_fuse = nn.Sequential(
-            nn.Conv2d(fpn_dim, 48, kernel_size=1, bias=False),
-            nn.BatchNorm2d(48),
+            nn.Conv2d(fpn_dim, 96, kernel_size=1, bias=False),
+            nn.BatchNorm2d(96),
             nn.ReLU(inplace=True),
         )
 

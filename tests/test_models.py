@@ -43,7 +43,7 @@ def test_hierarchical_fpn_output():
     out, low_feat = fpn(vit_tokens, cnn_features, vit_intermediate)
     assert set(out.keys()) == {"p1", "p2", "p3", "p4", "p5"}
     assert out["p1"].shape[1] == 256
-    assert low_feat.shape[1] == 48
+    assert low_feat.shape[1] == 96
 
 
 def test_mutual_feature_exchange():

@@ -10,14 +10,13 @@ from typing import Optional
 import torch
 
 from configs import STAGE1_DEFAULT_CONFIG
+from configs.defaults import Stage1Config
 
 
-def detect_gpu_setup(force_batch_size: Optional[int] = None) -> None:
+def detect_gpu_setup(force_batch_size: Optional[int] = None) -> Stage1Config:
     if not torch.cuda.is_available():
         print("No GPU detected. Using CPU defaults.")
-        return
-
-    global STAGE1_DEFAULT_CONFIG
+        return STAGE1_DEFAULT_CONFIG
 
     num_gpus = torch.cuda.device_count()
     vram_gb: list[float] = []
@@ -49,7 +48,7 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> None:
 
     print(f"  -> batch_size = {bs}, num_workers = {n_workers}")
 
-    STAGE1_DEFAULT_CONFIG = replace(
+    cfg = replace(
         STAGE1_DEFAULT_CONFIG,
         batch_size=bs,
         num_workers=n_workers,
@@ -73,6 +72,7 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> None:
     print("  -> TF32 Tensor Cores enabled")
 
     cleanup_gpu_cache()
+    return cfg
 
 
 def patch_autocast_for_bf16() -> bool:

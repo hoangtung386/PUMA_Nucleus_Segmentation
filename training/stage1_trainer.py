@@ -35,6 +35,12 @@ from utils.split_utils import make_or_load_group_split
 cfg = STAGE1_DEFAULT_CONFIG
 
 
+def _set_cfg(override_cfg):
+    global cfg
+    if override_cfg is not None:
+        cfg = override_cfg
+
+
 def apply_smooth_schedule(model: torch.nn.Module, criterion: torch.nn.Module, epoch: int) -> tuple[float, float]:
     core = model.module if hasattr(model, "module") else model
 
@@ -156,7 +162,8 @@ def _optimize_gpu() -> None:
     logger.info("GPU optimizations: cudnn.benchmark=True tf32=True matmul_precision=high")
 
 
-def main() -> None:
+def main(override_cfg=None) -> None:
+    _set_cfg(override_cfg)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
