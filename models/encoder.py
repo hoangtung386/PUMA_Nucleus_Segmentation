@@ -4,7 +4,7 @@ from typing import Any, List, Tuple
 
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModel
+from transformers import AutoConfig, AutoModel, ViTConfig
 
 from models.cross_attention import SpatialInjector
 from training.logging_utils import logger
@@ -18,11 +18,30 @@ def build_virchow2_vit(
     try:
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True, local_files_only=True)
     except Exception:
-        logger.warning("Virchow2 config not found locally, downloading (requires HF token for gated repo)")
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        try:
+            logger.warning("Virchow2 config not found locally, downloading (requires HF token for gated repo)")
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        except Exception:
+            logger.warning("Virchow2 config loading failed; using fallback ViT-H/14 config")
+            config = ViTConfig(
+                hidden_size=1280,
+                num_hidden_layers=32,
+                num_attention_heads=16,
+                intermediate_size=1280 * 4,
+                patch_size=14,
+                image_size=1024,
+            )
+
+    if hasattr(config, "num_labels") and config.num_labels is None:
+        config.num_labels = 0
+
     if load_weights:
-        model = AutoModel.from_pretrained(model_name, config=config, trust_remote_code=True)
-        logger.info("Loaded Virchow2: %s", model_name)
+        try:
+            model = AutoModel.from_pretrained(model_name, config=config, trust_remote_code=True)
+            logger.info("Loaded Virchow2: %s", model_name)
+        except Exception:
+            logger.warning("Failed to load Virchow2 weights; using random init")
+            model = AutoModel.from_config(config, trust_remote_code=True)
     else:
         model = AutoModel.from_config(config, trust_remote_code=True)
         logger.info("Built Virchow2 from config (no weights): %s", model_name)
