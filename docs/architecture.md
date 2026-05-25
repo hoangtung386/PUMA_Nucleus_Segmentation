@@ -56,7 +56,7 @@ flowchart TD
             TFuse["tissue_fuse Conv1×1<br/>cat[f_t, p4↑, p5↑]<br/>768 → 256"] --> ASPP["ASPP<br/>(rates 1,3,6,9 + pool)<br/>→ [B, 256, 128, 128]"]
             ASPP --> LowConv["low_level_conv<br/>[B,96]→[B,48]"]
             FPN_Out --> LowConv
-            LowConv --> TissueHead["DeepLabV3PlusTissueHead<br/>upsample + fuse conv<br/>→ classifier Conv1×1"] --> TissueOut["Tissue Logits<br/>[B, 5, 512, 512]"]
+            LowConv --> TissueHead["DeepLabV3PlusTissueHead<br/>upsample + fuse conv<br/>→ classifier Conv1×1"] --> TissueOut["Tissue Logits<br/>[B, 6, 512, 512]"]
         end
 
         subgraph NucleiClass["Nuclei Classification Branch"]
@@ -97,7 +97,7 @@ flowchart TD
     UpB --> Final
 
     Final --> Outputs["{
-tissue:   [B, 5,  H, W]
+tissue:   [B, 6,  H, W]
 nc:       [B, 10, H, W]
 np:       [B, 1,  H, W]
 hv:       [B, 2,  H, W]
@@ -187,7 +187,7 @@ UnifiedPanopticNet
 
 ## Key Design Decisions
 
-1. **No background tissue class** — Model predicts 5 foreground classes; background (PUMA ID 0) is `ignore_index=255` in loss. Inference shifts output +1 for PUMA compatibility.
+1. **Background included as class 0** — Model predicts 6 tissue classes (background, stroma, blood_vessel, tumor, epidermis, necrosis). Background is no longer `ignore_index=255`; it is learned like any other class. Inference output is already in PUMA format (no shift needed).
 
 2. **Rare-class focused** — Weighted sampling (bonus ×8), class-weighted loss, 55% selection score weight on rare dice.
 

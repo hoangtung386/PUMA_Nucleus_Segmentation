@@ -8,7 +8,7 @@ from data.dataset.transforms import get_train_transforms, get_val_transforms
 def test_val_transforms_output_keys():
     transforms = get_val_transforms(256)
     image = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
-    tissue = np.random.randint(0, 5, (512, 512), dtype=np.uint8)
+    tissue = np.random.randint(0, 6, (512, 512), dtype=np.uint8)
     nuclei = np.random.randint(0, 10, (512, 512), dtype=np.uint8)
     hv = np.random.randn(512, 512, 2).astype(np.float32)
     out = transforms(image=image, tissue_mask=tissue, nuclei_mask=nuclei, hv_map=hv)
@@ -22,7 +22,7 @@ def test_val_transforms_output_keys():
 def test_train_transforms_with_stain_aug():
     transforms = get_train_transforms(256, use_stain_aug=True)
     image = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
-    tissue = np.random.randint(0, 5, (512, 512), dtype=np.uint8)
+    tissue = np.random.randint(0, 6, (512, 512), dtype=np.uint8)
     nuclei = np.random.randint(0, 10, (512, 512), dtype=np.uint8)
     hv = np.random.randn(512, 512, 2).astype(np.float32)
     out = transforms(image=image, tissue_mask=tissue, nuclei_mask=nuclei, hv_map=hv)

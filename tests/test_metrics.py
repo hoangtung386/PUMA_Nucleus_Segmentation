@@ -28,11 +28,11 @@ def test_puma_metrics_all_metrics():
     metrics = PUMAMetrics()
     batch = 2
     preds = {
-        "tissue": torch.randn(batch, 5, 10, 10),
+        "tissue": torch.randn(batch, 6, 10, 10),
         "nc": torch.randn(batch, 10, 10, 10),
     }
     targets = {
-        "tissue_sem": torch.randint(0, 5, (batch, 10, 10), dtype=torch.long),
+        "tissue_sem": torch.randint(0, 6, (batch, 10, 10), dtype=torch.long),
         "nuclei_nc": torch.randint(0, 10, (batch, 10, 10), dtype=torch.long),
     }
     result = metrics.calculate_all_metrics(preds, targets)

@@ -85,7 +85,7 @@ class HoVerNeXtNucleiHead(nn.Module):
 
 
 class DeepLabV3PlusTissueHead(nn.Module):
-    def __init__(self, fpn_dim: int = 256, num_tissue: int = 5, low_level_channels: int = 96) -> None:
+    def __init__(self, fpn_dim: int = 256, num_tissue: int = 6, low_level_channels: int = 96) -> None:
         super().__init__()
         self.aspp = ASPP(fpn_dim, fpn_dim, rates=(1, 3, 6, 9))
         self.low_level_conv = nn.Sequential(
@@ -142,11 +142,9 @@ class CellViTPlusPlusNucleiDecoder(nn.Module):
 
 class ParallelDecoders(nn.Module):
     def __init__(
-        self, fpn_dim: int = 256, num_tissue: int = 5, num_nuclei: int = 10, low_level_channels: int = 96
+        self, fpn_dim: int = 256, num_tissue: int = 6, num_nuclei: int = 10, low_level_channels: int = 96
     ) -> None:
         super().__init__()
-        if num_tissue != 5:
-            raise ValueError("This model uses exactly 5 tissue classes, no background channel.")
         self.tissue_proj = nn.Conv2d(fpn_dim, fpn_dim, 1)
         self.nuclei_proj = nn.Conv2d(fpn_dim, fpn_dim, 1)
         self.exchange = MutualFeatureExchange(dim=fpn_dim)

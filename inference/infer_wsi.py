@@ -117,7 +117,7 @@ def process_image(
 
     rows = make_tile_starts(h, tile_size, stride)
     cols = make_tile_starts(w, tile_size, stride)
-    tissue_acc = np.zeros((5, h, w), dtype=np.float32)
+    tissue_acc = np.zeros((6, h, w), dtype=np.float32)
     tissue_count = np.zeros((h, w), dtype=np.float32)
     polygons = []
     half = overlap // 2
@@ -152,8 +152,7 @@ def process_image(
             polygons.extend(instances_to_polygons(inst, ids, tile_offset=(r, c), valid_r=valid_r, valid_c=valid_c))
 
     tissue_avg = tissue_acc / np.maximum(tissue_count[None, ...], 1e-6)
-    tissue_internal = tissue_avg.argmax(axis=0).astype(np.uint8)
-    tissue_puma = internal_tissue_to_puma(tissue_internal).astype(np.uint8)
+    tissue_puma = tissue_avg.argmax(axis=0).astype(np.uint8)
 
     output_dir = Path(output_dir)
     tissue_dir = output_dir / "images" / "melanoma-tissue-mask-segmentation"

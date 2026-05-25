@@ -55,13 +55,13 @@ def test_multi_task_uncertainty_loss_output():
     loss_fn = MultiTaskUncertaintyLoss()
     batch = 2
     preds = {
-        "tissue": torch.randn(batch, 5, 10, 10),
+        "tissue": torch.randn(batch, 6, 10, 10),
         "np": torch.randn(batch, 1, 10, 10),
         "nc": torch.randn(batch, 10, 10, 10),
         "hv": torch.randn(batch, 2, 10, 10),
     }
     targets = {
-        "tissue_sem": torch.randint(0, 5, (batch, 10, 10), dtype=torch.long),
+        "tissue_sem": torch.randint(0, 6, (batch, 10, 10), dtype=torch.long),
         "nuclei_nc": torch.randint(0, 10, (batch, 10, 10), dtype=torch.long),
         "nuclei_np": torch.randint(0, 2, (batch, 10, 10), dtype=torch.long),
         "nuclei_hv": torch.randn(batch, 2, 10, 10),

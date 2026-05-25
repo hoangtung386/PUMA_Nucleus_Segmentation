@@ -24,7 +24,7 @@ def load_stage1(checkpoint_path: str, device: torch.device):
         model = UnifiedPanopticNet(
             virchow2_model_name="paige-ai/Virchow2",
             cnn_model=cnn,
-            num_tissue=5,
+            num_tissue=6,
             num_nuclei=10,
             fine_tune_last_n_blocks=6,
             load_encoder_weights=False,

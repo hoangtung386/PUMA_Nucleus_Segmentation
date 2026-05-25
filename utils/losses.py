@@ -1,4 +1,4 @@
-"""Rare-focused loss for v8 CellPath: 5 tissue + 10 nuclei + boundary-aware HV."""
+"""Rare-focused loss for v8 CellPath: 6 tissue + 10 nuclei + boundary-aware HV."""
 
 from typing import List, Optional, Tuple
 
@@ -11,23 +11,27 @@ from training.logging_utils import logger
 
 
 class SafeCrossEntropyLoss(nn.Module):
-    def __init__(self, weight: Optional[torch.Tensor] = None, ignore_index: int = 255) -> None:
+    def __init__(self, weight: Optional[torch.Tensor] = None, ignore_index: Optional[int] = 255) -> None:
         super().__init__()
-        self.ignore_index = int(ignore_index)
+        self.ignore_index = ignore_index
         if weight is None:
             self.weight = None
         else:
             self.register_buffer("weight", weight.float())
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        valid = targets != self.ignore_index
-        if not torch.any(valid):
-            return logits.sum() * 0.0
+        if self.ignore_index is not None:
+            valid = targets != self.ignore_index
+            if not torch.any(valid):
+                return logits.sum() * 0.0
+            ce_ignore = self.ignore_index
+        else:
+            ce_ignore = -100
         return F.cross_entropy(
             logits,
             targets,
             weight=self.weight.to(logits.device) if self.weight is not None else None,
-            ignore_index=self.ignore_index,
+            ignore_index=ce_ignore,
         )
 
 
@@ -38,7 +42,7 @@ class FocalTverskyLoss(nn.Module):
         beta: float = 0.7,
         gamma: float = 1.25,
         smooth: float = 1e-5,
-        ignore_index: int = 255,
+        ignore_index: Optional[int] = 255,
         class_weights: Optional[torch.Tensor] = None,
     ) -> None:
         super().__init__()
@@ -46,24 +50,28 @@ class FocalTverskyLoss(nn.Module):
         self.beta = float(beta)
         self.gamma = float(gamma)
         self.smooth = float(smooth)
-        self.ignore_index = int(ignore_index)
+        self.ignore_index = ignore_index
         if class_weights is None:
             self.class_weights = None
         else:
             self.register_buffer("class_weights", class_weights.float())
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        valid = targets != self.ignore_index
-        if not torch.any(valid):
-            return logits.sum() * 0.0
         c = logits.shape[1]
         probs = F.softmax(logits, dim=1)
-        targets_safe = targets.clone()
-        targets_safe[~valid] = 0
+        if self.ignore_index is not None:
+            valid = targets != self.ignore_index
+            if not torch.any(valid):
+                return logits.sum() * 0.0
+            targets_safe = targets.clone()
+            targets_safe[~valid] = 0
+            valid_mask = valid.unsqueeze(1).float()
+            probs = probs * valid_mask
+        else:
+            targets_safe = targets
+            valid_mask = 1.0
         one_hot = F.one_hot(targets_safe.clamp(0, c - 1), num_classes=c).permute(0, 3, 1, 2).float()
-        valid_mask = valid.unsqueeze(1).float()
-        probs = probs * valid_mask
-        one_hot = one_hot * valid_mask
+        one_hot = one_hot * valid_mask if torch.is_tensor(valid_mask) else one_hot
         tp = (probs * one_hot).sum(dim=(2, 3))
         fp = (probs * (1.0 - one_hot)).sum(dim=(2, 3))
         fn = ((1.0 - probs) * one_hot).sum(dim=(2, 3))
@@ -126,11 +134,11 @@ class MultiTaskUncertaintyLoss(nn.Module):
         self.register_buffer("tissue_weights", tissue_weights.float())
         self.register_buffer("nuclei_weights", nuclei_weights.float())
 
-        self.ce_tissue = SafeCrossEntropyLoss(weight=self.tissue_weights, ignore_index=ignore_index)
+        self.ce_tissue = SafeCrossEntropyLoss(weight=self.tissue_weights, ignore_index=None)
         self.ce_nc = SafeCrossEntropyLoss(weight=self.nuclei_weights, ignore_index=ignore_index)
 
         self.ft_tissue = FocalTverskyLoss(
-            alpha=0.30, beta=0.70, gamma=1.25, ignore_index=ignore_index, class_weights=self.tissue_weights
+            alpha=0.30, beta=0.70, gamma=1.25, ignore_index=None, class_weights=self.tissue_weights
         )
         self.ft_nc = FocalTverskyLoss(
             alpha=0.25, beta=0.75, gamma=1.50, ignore_index=ignore_index, class_weights=self.nuclei_weights

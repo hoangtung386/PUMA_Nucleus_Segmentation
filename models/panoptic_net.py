@@ -17,15 +17,13 @@ class UnifiedPanopticNet(nn.Module):
         self,
         virchow2_model_name: str = "paige-ai/Virchow2",
         cnn_model: Any = None,
-        num_tissue: int = 5,
+        num_tissue: int = 6,
         num_nuclei: int = 10,
         fine_tune_last_n_blocks: int = 6,
         load_encoder_weights: bool = True,
         use_context_encoder: bool = False,
     ) -> None:
         super().__init__()
-        if num_tissue != 5:
-            raise ValueError("This model uses exactly 5 tissue classes. Background is ignored, not predicted.")
 
         self.encoder = UnifiedPanopticEncoder(
             virchow2_model_name=virchow2_model_name,

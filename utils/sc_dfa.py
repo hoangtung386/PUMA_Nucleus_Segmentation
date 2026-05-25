@@ -4,12 +4,10 @@ import torch.nn.functional as F
 
 
 class SCDFA(nn.Module):
-    """SC-DFA with Version-2.2 shape: 5 tissue classes x 10 nuclei classes."""
+    """SC-DFA with Version-2.2 shape: 6 tissue classes x 10 nuclei classes."""
 
-    def __init__(self, num_tissue_classes: int = 5, num_nuclei_classes: int = 10) -> None:
+    def __init__(self, num_tissue_classes: int = 6, num_nuclei_classes: int = 10) -> None:
         super().__init__()
-        if num_tissue_classes != 5:
-            raise ValueError("Merged no-background setup requires num_tissue_classes=5")
         self.W_k = nn.Parameter(torch.empty(num_tissue_classes, num_nuclei_classes))
         nn.init.xavier_uniform_(self.W_k)
 

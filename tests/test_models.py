@@ -11,7 +11,7 @@ from models.fpn_aggregator import HierarchicalFPN
 
 
 def test_decoder_output_shapes():
-    decoders = ParallelDecoders(fpn_dim=256, num_tissue=5, num_nuclei=10)
+    decoders = ParallelDecoders(fpn_dim=256, num_tissue=6, num_nuclei=10)
     fpn_feats = {
         "p1": torch.randn(1, 256, 256, 256),
         "p2": torch.randn(1, 256, 128, 128),
@@ -23,7 +23,7 @@ def test_decoder_output_shapes():
     vit_intermediate = torch.randn(4, 1, 1280, 64, 64)
 
     tissue, np, nc, hv, boundary = decoders(fpn_feats, low_level_feat, vit_intermediate)
-    assert tissue.shape[1] == 5
+    assert tissue.shape[1] == 6
     assert np.shape[1] == 1
     assert nc.shape[1] == 10
     assert hv.shape[1] == 2
@@ -56,11 +56,11 @@ def test_mutual_feature_exchange():
 
 
 def test_deep_lab_v3_plus_tissue_head():
-    head = DeepLabV3PlusTissueHead(fpn_dim=256, num_tissue=5, low_level_channels=96)
+    head = DeepLabV3PlusTissueHead(fpn_dim=256, num_tissue=6, low_level_channels=96)
     aspp_feat = torch.randn(1, 256, 64, 64)
     low_feat = torch.randn(1, 96, 256, 256)
     out = head(aspp_feat, low_feat)
-    assert out.shape[1] == 5
+    assert out.shape[1] == 6
 
 
 def test_cell_vit_plus_plus_decoder():

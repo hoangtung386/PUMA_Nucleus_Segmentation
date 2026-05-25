@@ -53,15 +53,11 @@ def _load_context_roi(context_dir: Path, source_name: str) -> Optional[np.ndarra
 
 
 def puma_tissue_to_internal(tissue_puma: np.ndarray) -> np.ndarray:
-    out = tissue_puma.astype(np.int64).copy()
-    out[out == 0] = IGNORE_INDEX
-    valid = out != IGNORE_INDEX
-    out[valid] = out[valid] - 1
-    return out
+    return tissue_puma.astype(np.int64).copy()
 
 
 def internal_tissue_to_puma(tissue_internal: np.ndarray) -> np.ndarray:
-    return tissue_internal.astype(np.uint8) + 1
+    return tissue_internal.astype(np.uint8)
 
 
 def source_name_from_base(base_name: str) -> str:
