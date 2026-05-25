@@ -12,32 +12,12 @@ if TYPE_CHECKING:
 
 
 def _autocast_context(device: torch.device) -> torch.amp.autocast:
-    """Return an autocast context manager for the given device.
-
-    Args:
-        device: A ``torch.device`` instance.
-
-    Returns:
-        torch.autocast: Autocast context for FP16 on CUDA (no-op on CPU).
-    """
     return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda")
 
 
 def _batch_to_device(
     batch: dict[str, Any], device: torch.device
-) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, list[str]]:
-    """Move a training batch to the target device.
-
-    Extracts and transfers images, all target tensors, cellpose flows, and
-    site-type metadata.
-
-    Args:
-        batch: Dict returned by the PUMADataset.
-        device: Target ``torch.device``.
-
-    Returns:
-        tuple: ``(images, targets_dict, cellpose_flows, site_types)``.
-    """
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor | None, torch.Tensor | None]:
     images = batch["image"].to(device, non_blocking=True)
     targets = {
         "tissue_sem": batch["tissue_sem"].to(device, non_blocking=True),
@@ -45,11 +25,15 @@ def _batch_to_device(
         "nuclei_nc": batch["nuclei_nc"].to(device, non_blocking=True),
         "nuclei_hv": batch["nuclei_hv"].to(device, non_blocking=True),
     }
-    cellpose_flows = batch["cellpose_flow"].to(device, non_blocking=True)
-    site_types = batch.get("site_type")
-    if site_types is None:
-        site_types = ["metastatic"] * images.shape[0]
-    return images, targets, cellpose_flows, site_types
+    site_ids = (
+        batch["site_id"].to(device, non_blocking=True) if isinstance(batch.get("site_id"), torch.Tensor) else None
+    )
+    context_roi = (
+        batch["context_roi"].to(device, non_blocking=True)
+        if isinstance(batch.get("context_roi"), torch.Tensor)
+        else None
+    )
+    return images, targets, site_ids, context_roi
 
 
 def train_one_epoch(
@@ -61,44 +45,39 @@ def train_one_epoch(
     device: torch.device,
     scaler: torch.amp.GradScaler,
     epoch: int,
+    grad_accum_steps: int = 1,
 ) -> float:
-    """Train the model for a single epoch.
-
-    Args:
-        model: The Stage 1 model to train.
-        dataloader: Training DataLoader.
-        optimizer: Optimizer (AdamW or 8-bit AdamW).
-        criterion: Multi-task loss criterion.
-        scheduler: LR scheduler (stepped per batch).
-        device: Target torch device.
-        scaler: ``GradScaler`` for mixed-precision training.
-        epoch: Current epoch number (used only for logging).
-
-    Returns:
-        float: Average training loss over the epoch.
-    """
     model.train()
     core = model.module if hasattr(model, "module") else model
     if hasattr(core, "encoder") and hasattr(core.encoder, "vit_model"):
-        core.encoder.vit_model.eval()
+        core.encoder.vit_model.eval() if not core.encoder.fine_tune else None
 
     running = 0.0
+    optimizer.zero_grad(set_to_none=True)
     pbar = tqdm(dataloader, desc=f"Train {epoch}", leave=False)
-    for batch in pbar:
-        images, targets, cellpose_flows, site_types = _batch_to_device(batch, device)
-        optimizer.zero_grad(set_to_none=True)
+
+    for i, batch in enumerate(pbar):
+        images, targets, site_ids, context_roi = _batch_to_device(batch, device)
         with _autocast_context(device):
-            preds = model(images, cellpose_flows, site_types)
+            preds = model(images, site_ids, context_roi)
             loss, branch_losses = criterion(preds, targets)
+            loss = loss / grad_accum_steps
         scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
-        if scheduler is not None:
-            scheduler.step()
-        running += float(loss.detach().item())
-        pbar.set_postfix(loss=f"{float(loss.detach().item()):.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
+
+        if (i + 1) % grad_accum_steps == 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                scheduler.step()
+
+        running += float(loss.detach().item()) * grad_accum_steps
+        pbar.set_postfix(
+            loss=f"{float(loss.detach().item() * grad_accum_steps):.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}"
+        )
+
     return running / max(len(dataloader), 1)
 
 
@@ -111,20 +90,6 @@ def validate(
     device: torch.device,
     epoch: int,
 ) -> dict[str, float]:
-    """Run validation for a single epoch.
-
-    Args:
-        model: The Stage 1 model to evaluate.
-        dataloader: Validation DataLoader.
-        criterion: Multi-task loss criterion.
-        metrics_calculator: ``PUMAMetrics`` instance.
-        device: Target torch device.
-        epoch: Current epoch number (used only for logging).
-
-    Returns:
-        dict: Validation metrics including ``val_loss``, per-branch losses,
-            and all per-class dice/iou scores.
-    """
     model.eval()
     running = 0.0
     metric_sum = {}
@@ -132,9 +97,9 @@ def validate(
 
     pbar = tqdm(dataloader, desc=f"Valid {epoch}", leave=False)
     for batch in pbar:
-        images, targets, cellpose_flows, site_types = _batch_to_device(batch, device)
+        images, targets, site_ids, context_roi = _batch_to_device(batch, device)
         with _autocast_context(device):
-            preds = model(images, cellpose_flows, site_types)
+            preds = model(images, site_ids, context_roi)
             loss, branch_losses = criterion(preds, targets)
         running += float(loss.detach().item())
         for i, v in enumerate(branch_losses):
