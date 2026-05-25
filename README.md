@@ -71,8 +71,6 @@ SymbioPan/
 ├── Dockerfile
 ├── Makefile
 ├── inference.sh
-├── Development_Orientation.md    # Architecture design document
-├── SYMBIOV8_REFACTOR_PLAN.md     # Refactoring plan
 │
 ├── configs/
 │   ├── __init__.py
