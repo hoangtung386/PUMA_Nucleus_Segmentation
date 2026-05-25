@@ -162,7 +162,16 @@ def _optimize_gpu() -> None:
     logger.info("GPU optimizations: cudnn.benchmark=True tf32=True matmul_precision=high")
 
 
-def main(override_cfg=None) -> None:
+def main(override_cfg=None, test_loader=None) -> dict:
+    """Run full Stage 1 training.
+
+    Args:
+        override_cfg: Optional Stage1Config to override defaults.
+        test_loader: Optional DataLoader for held-out test evaluation.
+
+    Returns:
+        dict with keys: history, best_epoch, best_score, best_val_report, test_metrics.
+    """
     _set_cfg(override_cfg)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     torch.manual_seed(cfg.seed)
@@ -250,6 +259,7 @@ def main(override_cfg=None) -> None:
     best_epoch = 0
     best_val_report = None
     start_epoch = 1
+    metrics_history: list[dict] = []
 
     if cfg.resume is not None:
         resume_path = Path(cfg.resume)
@@ -289,6 +299,8 @@ def main(override_cfg=None) -> None:
         val = validate(model, val_loader, criterion, metrics, device, epoch)
         print_report(epoch, train_loss, val)
 
+        metrics_history.append({"epoch": epoch, "train_loss": train_loss, **val})
+
         score = float(val.get("selection_score", -val.get("val_loss", 1e9)))
         if score > best_score:
             best_score = score
@@ -303,7 +315,32 @@ def main(override_cfg=None) -> None:
         last_path = PATHS.checkpoint_dir / "puma_epoch_last_s1.pth"
         save_checkpoint(last_path, model, criterion, optimizer, scheduler, scaler, epoch, best_score, best_val_report)
 
+    # ── Test set evaluation ──
+    test_metrics = None
+    if test_loader is not None:
+        logger.info("=" * 88)
+        logger.info("Evaluating best model on held-out test set...")
+        best_ckpt_path = PATHS.checkpoint_dir / "puma_epoch_best_s1.pth"
+        if best_ckpt_path.exists():
+            obj = torch.load(best_ckpt_path, map_location=device, weights_only=False)
+            core = model.module if hasattr(model, "module") else model
+            sd = obj if isinstance(obj, dict) else obj.state_dict()
+            core.load_state_dict(extract_state_dict(sd))
+            test_metrics = validate(model, test_loader, criterion, metrics, device, 0)
+            logger.info("Test metrics:")
+            for k, v in test_metrics.items():
+                if isinstance(v, float):
+                    logger.info("  %s: %.4f", k, v)
+
     logger.info("=" * 88)
     logger.info("Stage 1 complete. Best epoch: %d | score: %.4f", best_epoch, best_score)
     if best_val_report is not None:
         logger.info("Best rare macro dice: %.4f", best_val_report.get("rare_macro_dice", 0))
+
+    return {
+        "history": metrics_history,
+        "best_epoch": best_epoch,
+        "best_score": best_score,
+        "best_val_report": best_val_report,
+        "test_metrics": test_metrics,
+    }
