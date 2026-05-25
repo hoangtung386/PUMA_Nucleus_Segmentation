@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 
 
 def _autocast_context(device: torch.device) -> torch.amp.autocast:
+    if device.type == "cuda" and torch.cuda.is_bf16_supported():
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda")
 
 

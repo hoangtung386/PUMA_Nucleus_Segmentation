@@ -97,7 +97,7 @@ def _build_loader(
         pin_memory=True,
         drop_last=sampler is not None,
         persistent_workers=cfg.num_workers > 0,
-        prefetch_factor=2 if cfg.num_workers > 0 else 2,
+        prefetch_factor=4 if cfg.num_workers > 0 else 2,
     )
 
 
@@ -230,6 +230,13 @@ def main(override_cfg=None, test_loader=None) -> dict:
 
     if cfg.multi_gpu and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
+
+    if cfg.compile_model:
+        try:
+            model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+            logger.info("Model compiled with torch.compile (reduce-overhead)")
+        except Exception as e:
+            logger.warning("torch.compile failed (%s); running uncompiled", e)
 
     criterion = MultiTaskUncertaintyLoss(
         tissue_weights=torch.tensor(TISSUE_CLASS_WEIGHTS, dtype=torch.float32),

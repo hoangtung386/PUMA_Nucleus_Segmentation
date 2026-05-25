@@ -44,7 +44,7 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> Stage1Config:
         bs = bs * num_gpus
 
     cpu_count = os.cpu_count() or 4
-    n_workers = min(4, cpu_count)
+    n_workers = min(8, cpu_count)
 
     print(f"  -> batch_size = {bs}, num_workers = {n_workers}")
 
@@ -54,6 +54,7 @@ def detect_gpu_setup(force_batch_size: Optional[int] = None) -> Stage1Config:
         num_workers=n_workers,
         multi_gpu=num_gpus > 1,
         use_fp16=True,
+        compile_model=torch.cuda.get_device_capability() >= (7, 0),
         resume=None,
         epochs=30,
         focal_start_epoch=6,
