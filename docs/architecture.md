@@ -62,7 +62,7 @@ flowchart TD
         subgraph NucleiClass["Nuclei Classification Branch"]
             NC_Proj["ViT Projs ×4<br/>Conv2d 1×1, 1280→256"] --> NC_Fuse["Fuse Conv 3×3<br/>cat 4 levels → 1024→256"]
             Intermediate --> NC_Proj
-            NC_Fuse --> NC_Head["NC Head Conv 3×3<br/>256→10"] --> NCOut["NC Logits<br/>[B, 10, 73, 73]"]
+            NC_Fuse --> NC_Head["NC Head Conv 3×3 256→256 →<br/>BN+ReLU → Conv 1×1 256→10"] --> NCOut["NC Logits<br/>[B, 10, 73, 73]"]
         end
 
         subgraph NP_HV["NP + HV Branches"]
@@ -168,21 +168,22 @@ UnifiedPanopticNet
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| batch_size | 8 | Per GPU |
-| grad_accum_steps | 2 | Effective batch = 16 |
+| batch_size | auto-detected | 6 (H100), 4 (A100), 2 (V100), 1 (smaller) |
+| grad_accum_steps | auto-adjusted | max(2, 12 // bs); effective batch ≈ 12 |
 | epochs | 50 | Total training epochs |
 | lr | 1e-4 | AdamW learning rate |
 | weight_decay | 1e-4 | AdamW weight decay |
-| warmup | 5 | Linear warmup epochs |
+| warmup_epochs | 5 | Linear warmup epochs |
 | fine_tune_last_n_blocks | 6 | ViT blocks to unfreeze |
-| focal_ramp_start | 10 | FocalTversky ramp start |
-| focal_ramp_end | 16 | FocalTversky ramp end |
+| focal_start_epoch | 10 | FocalTversky ramp start |
+| focal_full_epoch | 16 | FocalTversky ramp end |
 | focal_max_weight | 0.5 | Max FocalTversky weight |
-| scdfa_ramp_start | 15 | SC-DFA ramp start |
-| scdfa_ramp_end | 22 | SC-DFA ramp end |
-| scdfa_max_lambda | 0.3 | Max SC-DFA λ |
-| context_encoder | False | Enable context conditioning |
-| stain_aug | False | Enable H&E stain augmentation |
+| sc_dfa_start_epoch | 15 | SC-DFA ramp start |
+| sc_dfa_full_epoch | 22 | SC-DFA ramp end |
+| sc_dfa_max_weight | 0.3 | Max SC-DFA λ |
+| compile_model | True | torch.compile on GPU CC ≥ 7.0 |
+| use_context_encoder | False | Enable context conditioning |
+| use_stain_aug | False | Enable H&E stain augmentation |
 
 ## Key Design Decisions
 

@@ -290,6 +290,18 @@ def main(override_cfg=None, test_loader=None) -> dict:
         else:
             logger.warning("Resume path %s does not exist. Starting from scratch.", resume_path)
 
+    # Warmup torch.compile graphs (train + eval modes) to avoid lazy-compile lag in epoch 1
+    if cfg.compile_model:
+        logger.info("Warming up torch.compile graphs...")
+        dummy_img = torch.randn(1, 3, 1024, 1024, device=device)
+        dummy_site = torch.zeros(1, dtype=torch.long, device=device)
+        model.train()
+        _ = model(dummy_img, dummy_site)
+        model.eval()
+        _ = model(dummy_img, dummy_site)
+        torch.cuda.synchronize()
+        logger.info("torch.compile warmup done")
+
     for epoch in range(start_epoch, cfg.epochs + 1):
         apply_smooth_schedule(model, criterion, epoch)
         train_loss = train_one_epoch(
