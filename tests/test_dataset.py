@@ -1,6 +1,6 @@
 """Tests for dataset loading and site-type inference."""
 
-from data.dataset.puma_dataset import infer_site_id
+from symbiopan.data.dataset.puma_dataset import infer_site_id
 
 
 def test_infer_site_id_primary():

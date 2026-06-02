@@ -1,6 +1,6 @@
 import torch
 
-from utils.metrics import PUMAMetrics, SemanticMetricAccumulator
+from symbiopan.metrics.panoptic import PUMAMetrics, SemanticMetricAccumulator
 
 
 def test_semantic_accumulator_basic():
@@ -44,6 +44,6 @@ def test_puma_metrics_all_metrics():
 
 def test_nanmean():
     assert PUMAMetrics._nanmean([1.0, 2.0, 3.0]) == 2.0
-    assert PUMAMetrics._nanmean([]) != PUMAMetrics._nanmean([])  # is nan
+    assert PUMAMetrics._nanmean([]) != PUMAMetrics._nanmean([])
     assert PUMAMetrics._nan_to_zero(float("nan")) == 0.0
     assert PUMAMetrics._nan_to_zero(1.0) == 1.0

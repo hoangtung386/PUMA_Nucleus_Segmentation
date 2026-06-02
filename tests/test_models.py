@@ -1,13 +1,12 @@
 import torch
 
-from models.decoders import (
-    BoundaryAttentionModule,
+from symbiopan.models.decoders import (
     CellViTPlusPlusNucleiDecoder,
     DeepLabV3PlusTissueHead,
     MutualFeatureExchange,
     ParallelDecoders,
 )
-from models.fpn_aggregator import HierarchicalFPN
+from symbiopan.models.fpn_aggregator import HierarchicalFPN
 
 
 def test_decoder_output_shapes():
@@ -22,12 +21,11 @@ def test_decoder_output_shapes():
     low_level_feat = torch.randn(1, 96, 256, 256)
     vit_intermediate = torch.randn(4, 1, 1280, 64, 64)
 
-    tissue, np, nc, hv, boundary = decoders(fpn_feats, low_level_feat, vit_intermediate)
+    tissue, np, nc, hv = decoders(fpn_feats, low_level_feat, vit_intermediate)
     assert tissue.shape[1] == 6
     assert np.shape[1] == 1
     assert nc.shape[1] == 10
     assert hv.shape[1] == 2
-    assert boundary.shape[1] == 1
 
 
 def test_hierarchical_fpn_output():
@@ -76,12 +74,3 @@ def test_cell_vit_plus_plus_decoder():
     )
     out = decoder(vit_intermediate)
     assert out.shape[1] == 10
-
-
-def test_boundary_attention_module():
-    bam = BoundaryAttentionModule(fpn_dim=256)
-    x = torch.randn(1, 256, 256, 256)
-    out = bam(x)
-    assert out.shape[1] == 1
-    assert out.shape[2] == x.shape[2]
-    assert out.shape[3] == x.shape[3]

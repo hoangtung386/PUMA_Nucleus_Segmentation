@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from data.dataset.transforms import get_train_transforms, get_val_transforms
+from symbiopan.data.dataset.transforms import get_train_transforms, get_val_transforms
 
 
 def test_val_transforms_output_keys():
