@@ -1,4 +1,4 @@
-# SymbioPan v8 (CellPath) — Model Architecture
+# SymbioPan v9 (CellPath) — Model Architecture
 
 ## Legend
 
@@ -71,21 +71,15 @@ flowchart TD
             HighRes --> NP["HoVerNeXtNucleiHead<br/>Conv 512→64→1"] --> NPOut["NP Logits<br/>[B, 1, 512, 512]"]
             HighRes --> HV["HoVerNeXtNucleiHead<br/>Conv 512→64→2"] --> HVOut["HV Maps<br/>[B, 2, 512, 512]"]
         end
-
-        subgraph Boundary["Boundary Branch"]
-            FPN_Out --> P1["p1 [B,256,512,512]"]
-            P1 --> BA["BoundaryAttentionModule<br/>Conv 256→64→1 + sigmoid"] --> BOut["Boundary Map<br/>[B, 1, 512, 512]"]
-        end
     end
 
-    %% ─── UPSAMPLE + SC-DFA ───
-    TissueOut --> UpTissue["Upsample ×2<br/>→ [B, 5, 1024, 1024]"]
-    NCOut --> UpNC["Upsample ×14<br/>→ [B, 10, 1024, 1024]"]
-    NPOut --> UpNP["Upsample ×2<br/>→ [B, 1, 1024, 1024]"]
-    HVOut --> UpHV["Upsample ×2<br/>→ [B, 2, 1024, 1024]"]
-    BOut --> UpB["Upsample ×2<br/>→ [B, 1, 1024, 1024]"]
+    %% ─── UPSAMPLE ───
+    TissueOut --> UpTissue["Upsample to input size<br/>→ [B, 6, H, W]"]
+    NCOut --> UpNC["Upsample to input size<br/>→ [B, 10, H, W]"]
+    NPOut --> UpNP["Upsample to input size<br/>→ [B, 1, H, W]"]
+    HVOut --> UpHV["Upsample to input size<br/>→ [B, 2, H, W]"]
 
-    SCDFA_W["SCDFA<br/>learned W [5×10]<br/>softmax(tissue) @ W"] -.-> NC_Residual["+ λ · SCDFA"]
+    SCDFA_W["SCDFA<br/>learned W [6×10]<br/>softmax(tissue) @ W"] -.-> NC_Residual["+ λ · SCDFA"]
     UpTissue --> SCDFA_W
     SCDFA_W -.-> NC_Residual
 
@@ -94,14 +88,12 @@ flowchart TD
     NC_Residual --> Final
     UpNP --> Final
     UpHV --> Final
-    UpB --> Final
 
     Final --> Outputs["{
 tissue:   [B, 6,  H, W]
 nc:       [B, 10, H, W]
 np:       [B, 1,  H, W]
 hv:       [B, 2,  H, W]
-boundary: [B, 1,  H, W]
 }"]
 
     %% ─── LOSS ───
@@ -109,16 +101,14 @@ boundary: [B, 1,  H, W]
 
     subgraph Loss["MultiTaskUncertaintyLoss"]
         direction LR
-        TCE["Tissue: CE + FocalTversky<br/>× 2.5"] --> LW1
-        NCE["NC: CE + FocalTversky<br/>× 2.8"] --> LW2
+        TCE["Tissue: CE + optional FocalTversky<br/>× 2.5"] --> LW1
+        NCE["NC: CE + optional FocalTversky<br/>× 2.8"] --> LW2
         NP_L["NP: FocalBCE + SoftDice<br/>× 1.0"] --> LW3
         HV_L["HV: SmoothL1 (β=0.5)<br/>× 1.0"] --> LW4
-        B_L["Boundary: not used<br/>× 0.0"] --> LW5
         LW1["∑ multiplier[i] · (exp(-log_var[i]) · loss[i] + log_var[i])"]
         LW2 --> LW1
         LW3 --> LW1
         LW4 --> LW1
-        LW5 --> LW1
     end
 
     %% ─── INFERENCE ───
@@ -156,12 +146,11 @@ UnifiedPanopticNet
 │   ├── nc_head: CellViTPlusPlusNucleiDecoder  # 4× ViT proj + fuse
 │   ├── np_head: HoVerNeXtNucleiHead    # 512→64→1
 │   ├── hv_head: HoVerNeXtNucleiHead    # 512→64→2
-│   ├── boundary_attn: BoundaryAttentionModule # 256→64→1 + sigmoid
 │   └── tissue_fuse                     # 1×1, 768→256 + BN + ReLU
 ├── context_encoder: ContextEncoder     # optional, EfficientNet-B0
 ├── context_fusion: ContextFusionModule # optional, FiLM
 ├── site_embed: nn.Embedding(9, 256)    # site conditioning
-└── sc_dfa: SCDFA                       # 5×10 weight matrix
+└── sc_dfa: SCDFA                       # 6×10 weight matrix
 ```
 
 ## Configuration (Stage1Config defaults)
@@ -187,10 +176,12 @@ UnifiedPanopticNet
 
 ## Key Design Decisions
 
-1. **Background included as class 0** — Model predicts 6 tissue classes (background, stroma, blood_vessel, tumor, epidermis, necrosis). Background is no longer `ignore_index=255`; it is learned like any other class. Inference output is already in PUMA format (no shift needed).
+1. **Background included as class 0** — Model predicts 6 tissue classes (0=background, 1=stroma, 2=blood_vessel, 3=tumor, 4=epidermis, 5=necrosis). Background is no longer `ignore_index=255`; it is learned like any other class. Inference output is already in PUMA format (no shift needed).
 
-2. **Rare-class focused** — Weighted sampling (bonus ×8), class-weighted loss, 55% selection score weight on rare dice.
+2. **No boundary branch** — The `BoundaryAttentionModule` was removed. `ParallelDecoders` returns 4 outputs (tissue, np, nc, hv). The boundary loss task has multiplier 0.0.
 
-3. **Progressive training** — FocalTversky ramps epochs 10–16; SC-DFA ramps epochs 15–22.
+3. **Rare-class focused** — Weighted sampling (bonus ×8), class-weighted loss, 55% selection score weight on rare dice.
 
-4. **TTA ×8** — 8 geometric transforms (flip + rot) applied, inverse-transformed, averaged during inference.
+4. **Progressive training** — FocalTversky ramps epochs 10–16; SC-DFA ramps epochs 15–22.
+
+5. **TTA ×8** — 8 geometric transforms (flip + rot) applied, inverse-transformed, averaged during inference.
