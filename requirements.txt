@@ -1,0 +1,10 @@
+torch
+torchvision
+timm>=1.0.3
+huggingface_hub
+numpy
+pandas
+scikit-learn
+tifffile
+Pillow
+tqdm
