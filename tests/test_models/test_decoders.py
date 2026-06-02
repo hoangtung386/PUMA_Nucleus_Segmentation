@@ -21,8 +21,14 @@ def test_parallel_decoders_output_shapes():
     }
     low_level_feat = torch.randn(1, 96, 256, 256)
     vit_intermediate = torch.randn(4, 1, 1280, 64, 64)
+    cnn_features = [
+        torch.randn(1, 96, 128, 128),
+        torch.randn(1, 192, 64, 64),
+        torch.randn(1, 384, 32, 32),
+        torch.randn(1, 768, 16, 16),
+    ]
 
-    tissue, np_logits, nc, hv = decoders(fpn_feats, low_level_feat, vit_intermediate)
+    tissue, np_logits, nc, hv = decoders(fpn_feats, low_level_feat, vit_intermediate, cnn_features)
     assert tissue.shape[1] == 6
     assert np_logits.shape[1] == 1
     assert nc.shape[1] == 10

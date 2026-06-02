@@ -54,6 +54,7 @@ class HierarchicalFPN(nn.Module):
         )
         p3 = self.smooth3(s2 + F.interpolate(p4, size=s2.shape[-2:], mode="bilinear", align_corners=False))
         p2 = self.smooth2(s1 + F.interpolate(p3, size=s1.shape[-2:], mode="bilinear", align_corners=False))
-        p1 = self.smooth1(F.interpolate(p2, scale_factor=2, mode="bilinear", align_corners=False))
+        s1_up = F.interpolate(s1, scale_factor=2, mode="bilinear", align_corners=False)
+        p1 = self.smooth1(s1_up + F.interpolate(p2, scale_factor=2, mode="bilinear", align_corners=False))
 
         return {"p1": p1, "p2": p2, "p3": p3, "p4": p4, "p5": p5}, low_level_feat

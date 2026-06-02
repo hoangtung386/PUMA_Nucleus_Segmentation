@@ -13,7 +13,7 @@ flowchart TD
 
     subgraph Encoder["UnifiedPanopticEncoder"]
         direction TB
-        CNN["ConvNeXt-Tiny<br/>timm features_only"] --> CNN_Feats["CNN Features<br/>[B, 96, 256, 256]<br/>[B, 192, 128, 128]<br/>[B, 384, 64, 64]<br/>[B, 768, 32, 32]"]
+        CNN["ConvNeXt-Tiny<br/>timm features_only"] --> CNN_Feats["CNN Features<br/>C1: [B, 96, 256, 256]<br/>C2: [B, 192, 128, 128]<br/>C3: [B, 384, 64, 64]<br/>C4: [B, 768, 32, 32]"]
 
         ViT["Virchow2 ViT-H/14<br/>32 blocks, dim=1280<br/>fine-tune last 6 blocks"] --> ViT_Tokens["ViT Tokens<br/>[B, 5330, 1280]"]
         ViT --> Intermediate["Intermediate (blocks 8,16,24,31)<br/>reshape tokens → spatial<br/>[4, B, 1280, 73, 73]"]
@@ -29,12 +29,16 @@ flowchart TD
 
     subgraph FPN["HierarchicalFPN"]
         direction TB
-        Latent["Latent Conv2d 1×1<br/>CNN_dims → 256<br/>×4 levels"] --> P_CNN["[B, 256, H/4…H/32]"]
+        Latent["Latent Conv2d 1×1<br/>CNN_dims → 256<br/>×4 levels → s1..s4"] --> P_CNN["[B, 256, H/4…H/32]"]
         ViT_Proj["ViT Proj Conv2d 1×1<br/>1280 → 256"] --> P_ViT["[B, 256, 73, 73]"]
         Fusion["Top-down fusion<br/>ViT injected at p4 level"]
         P_CNN --> Fusion
         P_ViT --> Fusion
         Fusion --> FPN_Out["{p1–p5}<br/>[B, 256, H/2…H/32]<br/>+ low_level_feat<br/>[B, 96, H/4, H/4]"]
+
+        P1_Fix["P1 = smooth1(s1↑ + p2↑)<br/>s1 from C1 upsampled 2×<br/>SKIP — preserves original encoder features"]
+        P_CNN --> P1_Fix
+        FPN_Out --> P1_Fix
     end
 
     %% ─── CONDITIONING ───
@@ -53,10 +57,21 @@ flowchart TD
         FPN_Out --> Exch
 
         subgraph Tissue["Tissue Branch"]
-            TFuse["tissue_fuse Conv1×1<br/>cat[f_t, p4↑, p5↑]<br/>768 → 256"] --> ASPP["ASPP<br/>(rates 1,3,6,9 + pool)<br/>→ [B, 256, 128, 128]"]
-            ASPP --> LowConv["low_level_conv<br/>[B,96]→[B,48]"]
+            TFuse["tissue_fuse Conv1×1<br/>cat[f_t, p4↑, p5↑, vit(8)↑, vit(16)↑, vit(24)↑, vit(31)↑]<br/>7×256 → 256<br/>← SKIP: vit_intermediate → tissue"]
+            Intermediate -->|"4× proj 1280→256 + upsample"| TFuse
+            Exch --> TFuse
+            FPN_Out --> TFuse
+
+            C2_Skip["C2 skip (additive)<br/>Conv1×1 192→256 + upsample<br/>→ ADD after tissue_fuse<br/>← SKIP: C2 → tissue decoder"]
+            CNN_Feats -->|C2| C2_Skip
+            TFuse --> C2_Skip
+
+            ASPP["ASPP<br/>(rates 1,3,6,9 + pool)<br/>→ [B, 256, 128, 128]"]
+            C2_Skip --> ASPP
+            LowConv["low_level_conv<br/>[B,96]→[B,48]"]
             FPN_Out --> LowConv
             LowConv --> TissueHead["DeepLabV3PlusTissueHead<br/>upsample + fuse conv<br/>→ classifier Conv1×1"] --> TissueOut["Tissue Logits<br/>[B, 6, 512, 512]"]
+            ASPP --> TissueHead
         end
 
         subgraph NucleiClass["Nuclei Classification Branch"]
@@ -66,10 +81,12 @@ flowchart TD
         end
 
         subgraph NP_HV["NP + HV Branches"]
-            HighRes["cat[p1, p2↑]<br/>→ [B, 512, 512, 512]"]
+            HighRes["cat[p1, p2↑, c1↑, c2↑]<br/>→ [B, 1024, 512, 512]<br/>← SKIPS: C1+C2 → np/hv decoder"]
             FPN_Out --> HighRes
-            HighRes --> NP["HoVerNeXtNucleiHead<br/>Conv 512→64→1"] --> NPOut["NP Logits<br/>[B, 1, 512, 512]"]
-            HighRes --> HV["HoVerNeXtNucleiHead<br/>Conv 512→64→2"] --> HVOut["HV Maps<br/>[B, 2, 512, 512]"]
+            CNN_Feats -->|"C1 proj 96→256 + upsample"| HighRes
+            CNN_Feats -->|"C2 proj 192→256 + upsample"| HighRes
+            HighRes --> NP["HoVerNeXtNucleiHead<br/>Conv 1024→64→1"] --> NPOut["NP Logits<br/>[B, 1, 512, 512]"]
+            HighRes --> HV["HoVerNeXtNucleiHead<br/>Conv 1024→64→2"] --> HVOut["HV Maps<br/>[B, 2, 512, 512]"]
         end
     end
 
@@ -95,34 +112,6 @@ nc:       [B, 10, H, W]
 np:       [B, 1,  H, W]
 hv:       [B, 2,  H, W]
 }"]
-
-    %% ─── LOSS ───
-    Outputs -.-> Loss
-
-    subgraph Loss["MultiTaskUncertaintyLoss"]
-        direction LR
-        TCE["Tissue: CE + optional FocalTversky<br/>× 2.5"] --> LW1
-        NCE["NC: CE + optional FocalTversky<br/>× 2.8"] --> LW2
-        NP_L["NP: FocalBCE + SoftDice<br/>× 1.0"] --> LW3
-        HV_L["HV: SmoothL1 (β=0.5)<br/>× 1.0"] --> LW4
-        LW1["∑ multiplier[i] · (exp(-log_var[i]) · loss[i] + log_var[i])"]
-        LW2 --> LW1
-        LW3 --> LW1
-        LW4 --> LW1
-    end
-
-    %% ─── INFERENCE ───
-    subgraph Inference["Inference Pipeline"]
-        direction TB
-        WSI["Input WSI TIFF"] --> Tiler["Tiler<br/>1024×1024 tiles, 256 overlap<br/>768 stride"]
-        Tiler --> TTA["TTA ×8<br/>(flip + rot) → average"]
-        TTA --> Model_Fwd["Model forward<br/>+ site embedding"]
-        Model_Fwd --> Tissue_Acc["Accumulate tissue logits<br/>weighted by overlap"]
-        Model_Fwd --> HV_Inst["HV Instance Segmentation<br/>threshold → gradient → watershed"]
-        HV_Inst --> Classify["Classify instances<br/>softmax majority vote"]
-        Classify --> Poly["Instances → Polygons<br/>GeoJSON"]
-        Tissue_Acc --> Tissue_Final["Tissue: argmax → PUMA<br/>TIFF mask"]
-    end
 ```
 
 ## Class Hierarchy
@@ -141,12 +130,16 @@ UnifiedPanopticNet
 ├── decoders: ParallelDecoders
 │   ├── tissue_proj / nuclei_proj       # 1×1, 256→256
 │   ├── exchange: MutualFeatureExchange # gated feature swap
+│   ├── c2_proj_tissue                  # 1×1, 192→256 — SKIP C2→tissue
+│   ├── vit_tissue_projs ×4             # 1×1, 1280→256 — SKIP vit→tissue
+│   ├── tissue_fuse                     # 1×1, 7×256→256 + BN + ReLU
+│   ├── c1_proj_np                      # 1×1, 96→256 — SKIP C1→np/hv
+│   ├── c2_proj_np                      # 1×1, 192→256 — SKIP C2→np/hv
 │   ├── tissue_decoder: DeepLabV3PlusTissueHead
 │   │   └── aspp: ASPP                  # 4× atrous + pool
 │   ├── nc_head: CellViTPlusPlusNucleiDecoder  # 4× ViT proj + fuse
-│   ├── np_head: HoVerNeXtNucleiHead    # 512→64→1
-│   ├── hv_head: HoVerNeXtNucleiHead    # 512→64→2
-│   └── tissue_fuse                     # 1×1, 768→256 + BN + ReLU
+│   ├── np_head: HoVerNeXtNucleiHead    # 1024→64→1
+│   ├── hv_head: HoVerNeXtNucleiHead    # 1024→64→2
 ├── context_encoder: ContextEncoder     # optional, EfficientNet-B0
 ├── context_fusion: ContextFusionModule # optional, FiLM
 ├── site_embed: nn.Embedding(9, 256)    # site conditioning

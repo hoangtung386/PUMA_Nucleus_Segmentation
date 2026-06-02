@@ -138,9 +138,17 @@ class CellViTPlusPlusNucleiDecoder(nn.Module):
 
 class ParallelDecoders(nn.Module):
     def __init__(
-        self, fpn_dim: int = 256, num_tissue: int = 6, num_nuclei: int = 10, low_level_channels: int = 96
+        self,
+        fpn_dim: int = 256,
+        num_tissue: int = 6,
+        num_nuclei: int = 10,
+        low_level_channels: int = 96,
+        cnn_dims: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__()
+        if cnn_dims is None:
+            cnn_dims = (96, 192, 384, 768)
+
         self.tissue_proj = nn.Conv2d(fpn_dim, fpn_dim, 1)
         self.nuclei_proj = nn.Conv2d(fpn_dim, fpn_dim, 1)
         self.exchange = MutualFeatureExchange(dim=fpn_dim)
@@ -153,12 +161,18 @@ class ParallelDecoders(nn.Module):
             fpn_dim=fpn_dim, vit_dims=(1280, 1280, 1280, 1280), num_nuclei=num_nuclei
         )
 
+        self.c2_proj_tissue = nn.Conv2d(cnn_dims[1], fpn_dim, 1)
+        self.vit_tissue_projs = nn.ModuleList([nn.Conv2d(1280, fpn_dim, 1) for _ in range(4)])
+
         self.tissue_fuse = nn.Sequential(
-            nn.Conv2d(fpn_dim * 3, fpn_dim, kernel_size=1, bias=False),
+            nn.Conv2d(fpn_dim * 7, fpn_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(fpn_dim),
             nn.ReLU(inplace=True),
         )
-        micro_in = fpn_dim * 2
+
+        self.c1_proj_np = nn.Conv2d(cnn_dims[0], fpn_dim, 1)
+        self.c2_proj_np = nn.Conv2d(cnn_dims[1], fpn_dim, 1)
+        micro_in = fpn_dim * 4
         self.np_head = HoVerNeXtNucleiHead(micro_in, 64, 1)
         self.hv_head = HoVerNeXtNucleiHead(micro_in, 64, 2)
 
@@ -167,19 +181,39 @@ class ParallelDecoders(nn.Module):
         fpn_feats: dict[str, torch.Tensor],
         low_level_feat: torch.Tensor,
         vit_intermediate: torch.Tensor,
+        cnn_features: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         p1, p2, p3, p4, p5 = fpn_feats["p1"], fpn_feats["p2"], fpn_feats["p3"], fpn_feats["p4"], fpn_feats["p5"]
         f_t, f_n = self.exchange(self.tissue_proj(p3), self.nuclei_proj(p3))
 
         p4_up = F.interpolate(p4, size=p3.shape[-2:], mode="bilinear", align_corners=False)
         p5_up = F.interpolate(p5, size=p3.shape[-2:], mode="bilinear", align_corners=False)
-        tissue_input = self.tissue_fuse(torch.cat([f_t, p4_up, p5_up], dim=1))
+        tissue_fuse_inputs = [f_t, p4_up, p5_up]
+
+        for proj, feat in zip(self.vit_tissue_projs, vit_intermediate, strict=False):
+            v = proj(feat)
+            v = F.interpolate(v, size=p3.shape[-2:], mode="bilinear", align_corners=False)
+            tissue_fuse_inputs.append(v)
+
+        tissue_input = self.tissue_fuse(torch.cat(tissue_fuse_inputs, dim=1))
+
+        if cnn_features is not None:
+            c2_tissue = self.c2_proj_tissue(cnn_features[1])
+            c2_tissue = F.interpolate(c2_tissue, size=tissue_input.shape[-2:], mode="bilinear", align_corners=False)
+            tissue_input = tissue_input + c2_tissue
         tissue_logits = self.tissue_decoder(tissue_input, low_level_feat)
 
         nc_logits = self.nc_head(vit_intermediate)
 
         p2_up = F.interpolate(p2, size=p1.shape[-2:], mode="bilinear", align_corners=False)
-        high_res = torch.cat([p1, p2_up], dim=1)
+        high_res_inputs = [p1, p2_up]
+        if cnn_features is not None:
+            c1_skip = self.c1_proj_np(cnn_features[0])
+            c1_skip = F.interpolate(c1_skip, size=p1.shape[-2:], mode="bilinear", align_corners=False)
+            c2_skip = self.c2_proj_np(cnn_features[1])
+            c2_skip = F.interpolate(c2_skip, size=p1.shape[-2:], mode="bilinear", align_corners=False)
+            high_res_inputs.extend([c1_skip, c2_skip])
+        high_res = torch.cat(high_res_inputs, dim=1)
         np_logits = self.np_head(high_res)
         hv_logits = self.hv_head(high_res)
 

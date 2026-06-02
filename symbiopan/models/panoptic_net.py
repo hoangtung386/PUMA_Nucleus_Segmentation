@@ -37,7 +37,9 @@ class UnifiedPanopticNet(nn.Module):
         )
         cnn_dims = cnn_model.feature_info.channels() if hasattr(cnn_model, "feature_info") else [96, 192, 384, 768]
         self.fpn = HierarchicalFPN(cnn_dims=cnn_dims)
-        self.decoders = ParallelDecoders(num_tissue=num_tissue, num_nuclei=num_nuclei, low_level_channels=cnn_dims[0])
+        self.decoders = ParallelDecoders(
+            num_tissue=num_tissue, num_nuclei=num_nuclei, low_level_channels=cnn_dims[0], cnn_dims=tuple(cnn_dims)
+        )
 
         self.use_context_encoder = use_context_encoder
         if use_context_encoder:
@@ -80,7 +82,9 @@ class UnifiedPanopticNet(nn.Module):
             for k in fpn_feats:
                 fpn_feats[k] = fpn_feats[k] + site_bias
 
-        tissue_logits, np_logits, nc_logits, hv_logits = self.decoders(fpn_feats, low_level_feat, vit_intermediate)
+        tissue_logits, np_logits, nc_logits, hv_logits = self.decoders(
+            fpn_feats, low_level_feat, vit_intermediate, cnn_features
+        )
         out_size = images.shape[-2:]
         tissue_logits = F.interpolate(tissue_logits, size=out_size, mode="bilinear", align_corners=False)
         np_logits = F.interpolate(np_logits, size=out_size, mode="bilinear", align_corners=False)
