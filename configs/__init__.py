@@ -1,4 +1,4 @@
-from configs.defaults import (  # noqa: F401
+from configs.defaults import (
     INFERENCE_DEFAULT_CONFIG,
     PATHS,
     PREPROCESS_DEFAULT_CONFIG,
@@ -10,8 +10,8 @@ from configs.defaults import (  # noqa: F401
 )
 
 __all__ = [
-    "PATHS",
     "INFERENCE_DEFAULT_CONFIG",
+    "PATHS",
     "PREPROCESS_DEFAULT_CONFIG",
     "STAGE1_DEFAULT_CONFIG",
     "InferenceConfig",

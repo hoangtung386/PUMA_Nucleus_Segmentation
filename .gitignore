@@ -10,12 +10,19 @@ build/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 
 checkpoints/
 checkpoint/
 output/
+outputs/
 test/
 dataset_processed/
+Dataset/
+dataset/
+data/raw/
+data/processed/
 *.npy
 *.tif
 *.tiff
@@ -30,7 +37,6 @@ wandb/
 .ipynb_checkpoints/
 *.swp
 *.swo
-
-data/raw/
-dataset/
-REFACTORING_GUIDE.md
+*.log
+*.bak
+*.tmp

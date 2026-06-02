@@ -3,9 +3,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import torch
-
-from data.constants import (
+from symbiopan.data.constants import (
     NORMALIZATION_MEAN,
     NORMALIZATION_STD,
     NUCLEI_CLASS_WEIGHTS,
@@ -101,16 +99,3 @@ PATHS = PathsConfig()
 STAGE1_DEFAULT_CONFIG = Stage1Config()
 PREPROCESS_DEFAULT_CONFIG = PreprocessConfig()
 INFERENCE_DEFAULT_CONFIG = InferenceConfig()
-
-
-def get_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def linear_ramp(epoch: int, start: int, end: int, max_value: float) -> float:
-    if epoch < start:
-        return 0.0
-    if epoch >= end:
-        return float(max_value)
-    progress = (epoch - start + 1) / max(end - start + 1, 1)
-    return float(max_value) * float(progress)
