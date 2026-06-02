@@ -64,6 +64,7 @@ class Stage1Config:
     virchow2_model_name: str = "paige-ai/Virchow2"
     cnn_backbone: str = "convnext_tiny"
     fine_tune_last_n_blocks: int = 6
+    sc_dfa_lambda: float = 0.3
     num_tissue: int = NUM_TISSUE_CLASSES
     num_nuclei: int = NUM_NUCLEI_CLASSES
     num_sites: int = 9
@@ -128,6 +129,7 @@ class InferenceConfig:
     num_tissue: int = NUM_TISSUE_CLASSES
     num_nuclei: int = NUM_NUCLEI_CLASSES
     fine_tune_last_n_blocks: int = 6
+    sc_dfa_lambda: float = 0.3
 
 
 PATHS = PathsConfig()

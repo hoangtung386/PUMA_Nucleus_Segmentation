@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from symbiopan.models.backbone import build_cnn_backbone
 from symbiopan.models.components import ContextEncoder
 from symbiopan.models.components.context_fusion import ContextFusionModule
 from symbiopan.models.decoders import ParallelDecoders
@@ -28,6 +29,8 @@ class UnifiedPanopticNet(nn.Module):
         use_context_encoder: bool = False,
     ) -> None:
         super().__init__()
+        if cnn_model is None:
+            cnn_model = build_cnn_backbone(pretrained=load_encoder_weights)
 
         self.encoder = UnifiedPanopticEncoder(
             virchow2_model_name=virchow2_model_name,
@@ -36,7 +39,8 @@ class UnifiedPanopticNet(nn.Module):
             load_weights=load_encoder_weights,
         )
         cnn_dims = cnn_model.feature_info.channels() if hasattr(cnn_model, "feature_info") else [96, 192, 384, 768]
-        self.fpn = HierarchicalFPN(cnn_dims=cnn_dims)
+        patch_size = int(getattr(getattr(self.encoder.vit_model, "config", None), "patch_size", 14))
+        self.fpn = HierarchicalFPN(cnn_dims=cnn_dims, patch_size=patch_size)
         self.decoders = ParallelDecoders(
             num_tissue=num_tissue, num_nuclei=num_nuclei, low_level_channels=cnn_dims[0], cnn_dims=tuple(cnn_dims)
         )
@@ -44,9 +48,12 @@ class UnifiedPanopticNet(nn.Module):
         self.use_context_encoder = use_context_encoder
         if use_context_encoder:
             self.context_encoder = ContextEncoder(output_dim=site_embed_dim, output_mode="global")
-            self.context_fusion = ContextFusionModule(context_dim=site_embed_dim, fpn_dim=site_embed_dim)
+            self.context_fusion = ContextFusionModule(context_dim=site_embed_dim, fpn_dim=self.fpn.fpn_dim)
 
         self.site_embed = nn.Embedding(num_embeddings=num_sites, embedding_dim=site_embed_dim)
+        self.site_proj = (
+            nn.Identity() if site_embed_dim == self.fpn.fpn_dim else nn.Linear(site_embed_dim, self.fpn.fpn_dim)
+        )
         self.sc_dfa = SCDFA(num_tissue_classes=num_tissue, num_nuclei_classes=num_nuclei)
         self.use_sc_dfa = False
         self.lambda_sc_dfa = 0.0
@@ -71,14 +78,14 @@ class UnifiedPanopticNet(nn.Module):
         context_roi: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         vit_tokens, cnn_features, vit_intermediate = self.encoder(images)
-        fpn_feats, low_level_feat = self.fpn(vit_tokens, cnn_features, img_size=images.shape[-1])
+        fpn_feats, low_level_feat = self.fpn(vit_tokens, cnn_features, img_size=images.shape[-2:])
 
         if self.use_context_encoder and context_roi is not None:
             ctx_desc = self.context_encoder(context_roi)
             fpn_feats = self.context_fusion(fpn_feats, ctx_desc)
 
         if site_ids is not None:
-            site_bias = self.site_embed(site_ids).unsqueeze(-1).unsqueeze(-1)
+            site_bias = self.site_proj(self.site_embed(site_ids)).unsqueeze(-1).unsqueeze(-1)
             for k in fpn_feats:
                 fpn_feats[k] = fpn_feats[k] + site_bias
 

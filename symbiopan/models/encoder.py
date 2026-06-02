@@ -9,6 +9,7 @@ from huggingface_hub import hf_hub_download
 from transformers import AutoModel, ViTConfig
 
 from symbiopan.common.logging import get_logger
+from symbiopan.models.backbone import build_cnn_backbone
 from symbiopan.models.cross_attention import SpatialInjector
 
 logger = get_logger(__name__)
@@ -77,7 +78,7 @@ class UnifiedPanopticEncoder(nn.Module):
     """ViT + CNN encoder with 4 cross-attention bridges and 4 intermediate ViT taps."""
 
     DEFAULT_BRIDGE_INTERVAL = 8
-    DEFAULT_INTERMEDIATE_INDICES = (8, 16, 24, 31)
+    DEFAULT_INTERMEDIATE_INDICES = (7, 15, 23, 31)
 
     def __init__(
         self,
@@ -92,8 +93,9 @@ class UnifiedPanopticEncoder(nn.Module):
             load_weights=load_weights,
             fine_tune_last_n_blocks=fine_tune_last_n_blocks,
         )
-        self.cnn_model = cnn_model
+        self.cnn_model = cnn_model if cnn_model is not None else build_cnn_backbone(pretrained=load_weights)
         self.fine_tune = fine_tune_last_n_blocks > 0
+        self.patch_size = int(getattr(getattr(self.vit_model, "config", None), "patch_size", _DEFAULT_VIRCHOW2_CFG["patch_size"]))
 
         vit_dim = self._get_vit_dim()
         if hasattr(self.cnn_model, "feature_info"):
@@ -112,11 +114,13 @@ class UnifiedPanopticEncoder(nn.Module):
     def forward(self, img: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
         cnn_features = self.cnn_model(img)
 
-        x = self.vit_model.get_input_embeddings()(img) if hasattr(self.vit_model, "get_input_embeddings") else None
-        if x is None and hasattr(self.vit_model, "embeddings"):
+        x = None
+        if hasattr(self.vit_model, "embeddings"):
             x = self.vit_model.embeddings(img)
         if x is None and hasattr(self.vit_model, "patch_embed"):
             x = self.vit_model.patch_embed(img)
+        if x is None and hasattr(self.vit_model, "get_input_embeddings"):
+            x = self.vit_model.get_input_embeddings()(img)
         if x is None:
             raise RuntimeError("Virchow2 model has no recognizable patch-embedding module")
 
@@ -130,11 +134,11 @@ class UnifiedPanopticEncoder(nn.Module):
         for i, block in enumerate(blocks):
             out = block(x)
             x = out[0] if isinstance(out, tuple) else out
-            if i in self.vit_intermediate_indices and bridge_idx < 4:
-                intermediate_features.append(x.clone())
             if (i + 1) % self.DEFAULT_BRIDGE_INTERVAL == 0 and bridge_idx < len(self.bridges):
                 x = self.bridges[bridge_idx](vit_tokens=x, cnn_features=cnn_features)
                 bridge_idx += 1
+            if i in self.vit_intermediate_indices:
+                intermediate_features.append(x.clone())
 
         if hasattr(self.vit_model, "norm"):
             x = self.vit_model.norm(x)
@@ -142,10 +146,14 @@ class UnifiedPanopticEncoder(nn.Module):
             x = self.vit_model.ln_f(x)
 
         spatial_list: list[torch.Tensor] = []
-        gh = img.shape[-2] // _DEFAULT_VIRCHOW2_CFG["patch_size"]
-        gw = img.shape[-1] // _DEFAULT_VIRCHOW2_CFG["patch_size"]
+        gh = img.shape[-2] // self.patch_size
+        gw = img.shape[-1] // self.patch_size
         n_spatial = gh * gw
         for feat in intermediate_features:
+            if feat.shape[1] < n_spatial:
+                raise RuntimeError(
+                    f"ViT feature has {feat.shape[1]} tokens, but image grid requires {n_spatial} spatial tokens"
+                )
             feat_spatial = feat[:, -n_spatial:, :]
             spatial_list.append(feat_spatial.transpose(1, 2).reshape(-1, feat_spatial.shape[-1], gh, gw))
         vit_intermediate_tensor = torch.stack(spatial_list, dim=0) if spatial_list else x.unsqueeze(0)

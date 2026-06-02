@@ -32,6 +32,7 @@ def test_parallel_decoders_output_shapes():
     assert tissue.shape[1] == 6
     assert np_logits.shape[1] == 1
     assert nc.shape[1] == 10
+    assert nc.shape[-2:] == fpn_feats["p2"].shape[-2:]
     assert hv.shape[1] == 2
 
 

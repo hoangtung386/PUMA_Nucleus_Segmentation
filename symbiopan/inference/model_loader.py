@@ -44,6 +44,9 @@ def load_stage1(
         model.load_state_dict(extract_state_dict(obj), strict=True)
         logger.info("Loaded Stage 1 from state dict: %s", checkpoint_path)
 
-    model.enable_sc_dfa(True)
+    if hasattr(model, "set_sc_dfa_lambda"):
+        model.set_sc_dfa_lambda(cfg.sc_dfa_lambda)
+    else:
+        model.enable_sc_dfa(True)
     model.to(device).eval()
     return model

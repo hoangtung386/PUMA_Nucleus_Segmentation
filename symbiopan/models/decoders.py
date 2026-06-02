@@ -118,6 +118,11 @@ class CellViTPlusPlusNucleiDecoder(nn.Module):
             nn.BatchNorm2d(fpn_dim),
             nn.ReLU(inplace=True),
         )
+        self.fpn_fuse = nn.Sequential(
+            nn.Conv2d(fpn_dim * 3, fpn_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(fpn_dim),
+            nn.ReLU(inplace=True),
+        )
         self.nc_head = nn.Sequential(
             nn.Conv2d(fpn_dim, fpn_dim, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(fpn_dim),
@@ -125,14 +130,18 @@ class CellViTPlusPlusNucleiDecoder(nn.Module):
             nn.Conv2d(fpn_dim, num_nuclei, kernel_size=1),
         )
 
-    def forward(self, vit_intermediate: torch.Tensor) -> torch.Tensor:
+    def forward(self, vit_intermediate: torch.Tensor, fpn_feats: dict[str, torch.Tensor] | None = None) -> torch.Tensor:
         upsampled = []
-        target_size = vit_intermediate[-1].shape[-2:]
+        target_size = fpn_feats["p2"].shape[-2:] if fpn_feats is not None else vit_intermediate[-1].shape[-2:]
         for proj, feat in zip(self.vit_projs, vit_intermediate, strict=False):
             x = proj(feat)
             x = F.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
             upsampled.append(x)
         fused = self.fuse(torch.cat(upsampled, dim=1))
+        if fpn_feats is not None:
+            p2 = fpn_feats["p2"]
+            p3 = F.interpolate(fpn_feats["p3"], size=target_size, mode="bilinear", align_corners=False)
+            fused = self.fpn_fuse(torch.cat([fused, p2, p3], dim=1))
         return self.nc_head(fused)
 
 
@@ -203,7 +212,7 @@ class ParallelDecoders(nn.Module):
             tissue_input = tissue_input + c2_tissue
         tissue_logits = self.tissue_decoder(tissue_input, low_level_feat)
 
-        nc_logits = self.nc_head(vit_intermediate)
+        nc_logits = self.nc_head(vit_intermediate, {"p2": p2, "p3": f_n})
 
         p2_up = F.interpolate(p2, size=p1.shape[-2:], mode="bilinear", align_corners=False)
         high_res_inputs = [p1, p2_up]

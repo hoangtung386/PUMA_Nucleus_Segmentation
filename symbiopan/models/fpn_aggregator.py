@@ -6,11 +6,18 @@ import torch.nn.functional as F
 
 
 class HierarchicalFPN(nn.Module):
-    def __init__(self, vit_dim: int = 1280, cnn_dims: list[int] | None = None, fpn_dim: int = 256) -> None:
+    def __init__(
+        self,
+        vit_dim: int = 1280,
+        cnn_dims: list[int] | None = None,
+        fpn_dim: int = 256,
+        patch_size: int = 14,
+    ) -> None:
         super().__init__()
         if cnn_dims is None:
             cnn_dims = [96, 192, 384, 768]
         self.fpn_dim = fpn_dim
+        self.patch_size = int(patch_size)
         self.latents = nn.ModuleList([nn.Conv2d(int(dim), fpn_dim, 1) for dim in cnn_dims])
         self.vit_proj = nn.Conv2d(vit_dim, fpn_dim, 1)
         self.smooth4 = nn.Conv2d(fpn_dim, fpn_dim, 3, padding=1)
@@ -34,12 +41,25 @@ class HierarchicalFPN(nn.Module):
             raise ValueError(f"Expected {len(self.latents)} CNN feature maps, got {len(cnn_features)}")
 
         b, n, c = vit_tokens.shape
-        grid_size = int(round(n**0.5))
-        expected = grid_size * grid_size
-        patch_tokens = vit_tokens[:, -expected:, :] if n >= expected else vit_tokens
+        if img_size is not None:
+            if isinstance(img_size, tuple):
+                img_h, img_w = img_size
+            else:
+                img_h = img_w = int(img_size)
+            gh = int(img_h) // self.patch_size
+            gw = int(img_w) // self.patch_size
+            expected = gh * gw
+            if n < expected:
+                raise ValueError(f"Expected at least {expected} ViT tokens for grid {(gh, gw)}, got {n}")
+            patch_tokens = vit_tokens[:, -expected:, :]
+        else:
+            grid_size = int(round(n**0.5))
+            expected = grid_size * grid_size
+            patch_tokens = vit_tokens[:, -expected:, :] if expected != n else vit_tokens
+            gh = gw = grid_size
         b, n, c = patch_tokens.shape
 
-        vit_2d = patch_tokens.transpose(1, 2).reshape(b, c, grid_size, grid_size)
+        vit_2d = patch_tokens.transpose(1, 2).reshape(b, c, gh, gw)
         vit_2d = self.vit_proj(vit_2d)
 
         s1, s2, s3, s4 = [proj(feat) for proj, feat in zip(self.latents, cnn_features, strict=False)]
