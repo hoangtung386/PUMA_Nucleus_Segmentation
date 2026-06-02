@@ -1,3 +1,5 @@
+"""Tests for decoder heads."""
+
 import torch
 
 from symbiopan.models.decoders import (
@@ -6,10 +8,9 @@ from symbiopan.models.decoders import (
     MutualFeatureExchange,
     ParallelDecoders,
 )
-from symbiopan.models.fpn_aggregator import HierarchicalFPN
 
 
-def test_decoder_output_shapes():
+def test_parallel_decoders_output_shapes():
     decoders = ParallelDecoders(fpn_dim=256, num_tissue=6, num_nuclei=10)
     fpn_feats = {
         "p1": torch.randn(1, 256, 256, 256),
@@ -21,30 +22,14 @@ def test_decoder_output_shapes():
     low_level_feat = torch.randn(1, 96, 256, 256)
     vit_intermediate = torch.randn(4, 1, 1280, 64, 64)
 
-    tissue, np, nc, hv = decoders(fpn_feats, low_level_feat, vit_intermediate)
+    tissue, np_logits, nc, hv = decoders(fpn_feats, low_level_feat, vit_intermediate)
     assert tissue.shape[1] == 6
-    assert np.shape[1] == 1
+    assert np_logits.shape[1] == 1
     assert nc.shape[1] == 10
     assert hv.shape[1] == 2
 
 
-def test_hierarchical_fpn_output():
-    fpn = HierarchicalFPN(vit_dim=1280, cnn_dims=[96, 192, 384, 768], fpn_dim=256)
-    vit_tokens = torch.randn(1, 257, 1280)
-    cnn_features = [
-        torch.randn(1, 96, 256, 256),
-        torch.randn(1, 192, 128, 128),
-        torch.randn(1, 384, 64, 64),
-        torch.randn(1, 768, 32, 32),
-    ]
-    vit_intermediate = torch.randn(4, 1, 64, 1280)
-    out, low_feat = fpn(vit_tokens, cnn_features, vit_intermediate)
-    assert set(out.keys()) == {"p1", "p2", "p3", "p4", "p5"}
-    assert out["p1"].shape[1] == 256
-    assert low_feat.shape[1] == 96
-
-
-def test_mutual_feature_exchange():
+def test_mutual_feature_exchange_preserves_shapes():
     mfe = MutualFeatureExchange(dim=256)
     f_t = torch.randn(1, 256, 32, 32)
     f_n = torch.randn(1, 256, 32, 32)

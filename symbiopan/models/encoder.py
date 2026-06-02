@@ -13,7 +13,7 @@ from symbiopan.models.cross_attention import SpatialInjector
 
 logger = get_logger(__name__)
 
-_VIRCHOW2_CFG = {
+_DEFAULT_VIRCHOW2_CFG: dict[str, int | float] = {
     "hidden_size": 1280,
     "num_hidden_layers": 32,
     "num_attention_heads": 16,
@@ -26,11 +26,11 @@ _VIRCHOW2_CFG = {
 
 
 def _load_virchow2_config(model_name: str) -> ViTConfig:
-    cfg = dict(_VIRCHOW2_CFG)
+    cfg = dict(_DEFAULT_VIRCHOW2_CFG)
     try:
         config_path = hf_hub_download(repo_id=model_name, filename="config.json")
         with open(config_path) as f:
-            cfg.update({k: v for k, v in json.load(f).items() if k in _VIRCHOW2_CFG})
+            cfg.update({k: v for k, v in json.load(f).items() if k in _DEFAULT_VIRCHOW2_CFG})
         logger.info("Loaded Virchow2 config from cache: %s", config_path)
     except Exception:
         logger.warning("Virchow2 config not available; using hardcoded ViT-H/14 config")
@@ -42,6 +42,7 @@ def build_virchow2_vit(
     load_weights: bool = True,
     fine_tune_last_n_blocks: int = 6,
 ) -> Any:
+    """Build a Virchow2 ViT-H/14 (32 blocks, dim=1280) with selective fine-tuning."""
     config = _load_virchow2_config(model_name)
 
     if hasattr(config, "num_labels") and config.num_labels is None:
@@ -73,6 +74,11 @@ def build_virchow2_vit(
 
 
 class UnifiedPanopticEncoder(nn.Module):
+    """ViT + CNN encoder with 4 cross-attention bridges and 4 intermediate ViT taps."""
+
+    DEFAULT_BRIDGE_INTERVAL = 8
+    DEFAULT_INTERMEDIATE_INDICES = (8, 16, 24, 31)
+
     def __init__(
         self,
         virchow2_model_name: str = "paige-ai/Virchow2",
@@ -96,9 +102,7 @@ class UnifiedPanopticEncoder(nn.Module):
             cnn_dims = [96, 192, 384, 768]
 
         self.bridges = nn.ModuleList([SpatialInjector(vit_dim=vit_dim, cnn_dims=cnn_dims) for _ in range(4)])
-
-        self.vit_intermediate_indices = (8, 16, 24, 31)
-        self._patch_proj = nn.Linear(3 * 14 * 14, vit_dim)
+        self.vit_intermediate_indices = self.DEFAULT_INTERMEDIATE_INDICES
 
     def _get_vit_dim(self) -> int:
         if hasattr(self.vit_model, "config"):
@@ -109,14 +113,12 @@ class UnifiedPanopticEncoder(nn.Module):
         cnn_features = self.cnn_model(img)
 
         x = self.vit_model.get_input_embeddings()(img) if hasattr(self.vit_model, "get_input_embeddings") else None
+        if x is None and hasattr(self.vit_model, "embeddings"):
+            x = self.vit_model.embeddings(img)
+        if x is None and hasattr(self.vit_model, "patch_embed"):
+            x = self.vit_model.patch_embed(img)
         if x is None:
-            x = self.vit_model.embeddings(img) if hasattr(self.vit_model, "embeddings") else None
-        if x is None:
-            x = (
-                self.vit_model.patch_embed(img)
-                if hasattr(self.vit_model, "patch_embed")
-                else self._simple_patch_embed(img)
-            )
+            raise RuntimeError("Virchow2 model has no recognizable patch-embedding module")
 
         if hasattr(self.vit_model, "encoder") and hasattr(self.vit_model.encoder, "layer"):
             blocks = self.vit_model.encoder.layer
@@ -130,7 +132,7 @@ class UnifiedPanopticEncoder(nn.Module):
             x = out[0] if isinstance(out, tuple) else out
             if i in self.vit_intermediate_indices and bridge_idx < 4:
                 intermediate_features.append(x.clone())
-            if (i + 1) % 8 == 0 and bridge_idx < len(self.bridges):
+            if (i + 1) % self.DEFAULT_BRIDGE_INTERVAL == 0 and bridge_idx < len(self.bridges):
                 x = self.bridges[bridge_idx](vit_tokens=x, cnn_features=cnn_features)
                 bridge_idx += 1
 
@@ -139,9 +141,9 @@ class UnifiedPanopticEncoder(nn.Module):
         elif hasattr(self.vit_model, "ln_f"):
             x = self.vit_model.ln_f(x)
 
-        spatial_list = []
-        gh = img.shape[-2] // 14
-        gw = img.shape[-1] // 14
+        spatial_list: list[torch.Tensor] = []
+        gh = img.shape[-2] // _DEFAULT_VIRCHOW2_CFG["patch_size"]
+        gw = img.shape[-1] // _DEFAULT_VIRCHOW2_CFG["patch_size"]
         n_spatial = gh * gw
         for feat in intermediate_features:
             feat_spatial = feat[:, -n_spatial:, :]
@@ -149,12 +151,3 @@ class UnifiedPanopticEncoder(nn.Module):
         vit_intermediate_tensor = torch.stack(spatial_list, dim=0) if spatial_list else x.unsqueeze(0)
 
         return x, cnn_features, vit_intermediate_tensor
-
-    def _simple_patch_embed(self, img: torch.Tensor) -> torch.Tensor:
-        b, c, h_img, w_img = img.shape
-        patch_size = 14
-        h, w = h_img // patch_size, w_img // patch_size
-        x = img.reshape(b, c, h, patch_size, w, patch_size)
-        x = x.permute(0, 2, 4, 1, 3, 5).reshape(b, h * w, c * patch_size * patch_size)
-        x = self._patch_proj(x)
-        return x

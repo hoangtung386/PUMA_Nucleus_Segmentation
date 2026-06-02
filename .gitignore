@@ -1,42 +1,68 @@
+# ── Python build ─────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 *.egg-info/
+*.egg
 dist/
 build/
 .eggs/
-*.egg
 
+# ── Tooling caches ───────────────────────────────────
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
 .coverage
 htmlcov/
 
-checkpoints/
-checkpoint/
-output/
-outputs/
-test/
-dataset_processed/
+# ── Data (large, regenerated) ────────────────────────
 Dataset/
 dataset/
+dataset_processed/
 data/raw/
 data/processed/
 *.npy
 *.tif
 *.tiff
+
+# ── Model artifacts ──────────────────────────────────
+checkpoints/
+checkpoint/
 *.pth
 *.pt
+*.safetensors
 
-.env
-.venv/
-venv/
+# ── Runtime outputs ──────────────────────────────────
+output/
+outputs/
+test/
 
-wandb/
-.ipynb_checkpoints/
-*.swp
-*.swo
+# ── Logs & temporary files ───────────────────────────
 *.log
 *.bak
 *.tmp
+*.swp
+*.swo
+
+# ── Secrets ──────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+
+# ── Virtual envs ─────────────────────────────────────
+.venv/
+venv/
+
+# ── Notebooks ────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Experiment tracking ──────────────────────────────
+wandb/
+
+# ── IDE / OS ─────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+*.iml

@@ -1,6 +1,5 @@
 """Hierarchical FPN with CNN + multi-scale ViT feature fusion."""
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

@@ -51,10 +51,15 @@ def train_one_epoch(
 ) -> float:
     model.train()
     core = model.module if hasattr(model, "module") else model
-    if hasattr(core, "encoder") and hasattr(core.encoder, "vit_model") and hasattr(core.encoder, "fine_tune") and not core.encoder.fine_tune:
-            core.encoder.vit_model.eval()
-            for p in core.encoder.vit_model.parameters():
-                p.requires_grad = False
+    if (
+        hasattr(core, "encoder")
+        and hasattr(core.encoder, "vit_model")
+        and hasattr(core.encoder, "fine_tune")
+        and not core.encoder.fine_tune
+    ):
+        core.encoder.vit_model.eval()
+        for p in core.encoder.vit_model.parameters():
+            p.requires_grad = False
 
     running = 0.0
     optimizer.zero_grad(set_to_none=True)

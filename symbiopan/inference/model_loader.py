@@ -1,9 +1,10 @@
-"""Model loading utilities for inference — v8 CellPath."""
+"""Model loading utilities for inference — v9 CellPath."""
 
 from pathlib import Path
 
 import torch
 
+from configs import INFERENCE_DEFAULT_CONFIG, InferenceConfig
 from symbiopan.common.logging import get_logger
 from symbiopan.models import UnifiedPanopticNet, build_cnn_backbone
 from symbiopan.training.checkpoint import extract_state_dict
@@ -11,7 +12,16 @@ from symbiopan.training.checkpoint import extract_state_dict
 logger = get_logger(__name__)
 
 
-def load_stage1(checkpoint_path: str, device: torch.device):
+def load_stage1(
+    checkpoint_path: str,
+    device: torch.device,
+    cfg: InferenceConfig | None = None,
+) -> UnifiedPanopticNet:
+    """Load a Stage 1 checkpoint into a configured ``UnifiedPanopticNet``.
+
+    Supports both full-entity (``torch.save(model)``) and state-dict checkpoints.
+    """
+    cfg = cfg or INFERENCE_DEFAULT_CONFIG
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Stage 1 checkpoint not found: {checkpoint_path}")
@@ -24,11 +34,11 @@ def load_stage1(checkpoint_path: str, device: torch.device):
     else:
         cnn = build_cnn_backbone(pretrained=False)
         model = UnifiedPanopticNet(
-            virchow2_model_name="paige-ai/Virchow2",
+            virchow2_model_name=cfg.virchow2_model_name,
             cnn_model=cnn,
-            num_tissue=6,
-            num_nuclei=10,
-            fine_tune_last_n_blocks=6,
+            num_tissue=cfg.num_tissue,
+            num_nuclei=cfg.num_nuclei,
+            fine_tune_last_n_blocks=cfg.fine_tune_last_n_blocks,
             load_encoder_weights=False,
         )
         model.load_state_dict(extract_state_dict(obj), strict=True)

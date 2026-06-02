@@ -17,12 +17,10 @@ from configs import PATHS, STAGE1_DEFAULT_CONFIG
 from symbiopan.common.device import get_device
 from symbiopan.common.logging import get_logger
 from symbiopan.data.constants import (
-    NUCLEI_CLASS_WEIGHTS,
     NUM_NUCLEI_CLASSES,
     NUM_TISSUE_CLASSES,
     PUMA_NUCLEI_ID_TO_NAME,
     PUMA_TISSUE_ID_TO_NAME,
-    TISSUE_CLASS_WEIGHTS,
 )
 from symbiopan.data.dataset import PUMADataset, get_train_transforms, get_val_transforms
 from symbiopan.losses import MultiTaskUncertaintyLoss
@@ -213,10 +211,12 @@ def main(override_cfg=None, test_loader=None) -> dict:
 
     cnn = build_cnn_backbone(pretrained=True)
     model = UnifiedPanopticNet(
-        virchow2_model_name="paige-ai/Virchow2",
+        virchow2_model_name=cfg.virchow2_model_name,
         cnn_model=cnn,
-        num_tissue=NUM_TISSUE_CLASSES,
-        num_nuclei=NUM_NUCLEI_CLASSES,
+        num_tissue=cfg.num_tissue,
+        num_nuclei=cfg.num_nuclei,
+        num_sites=cfg.num_sites,
+        site_embed_dim=cfg.site_embed_dim,
         fine_tune_last_n_blocks=cfg.fine_tune_last_n_blocks,
         load_encoder_weights=True,
         use_context_encoder=cfg.use_context_encoder,
@@ -233,8 +233,13 @@ def main(override_cfg=None, test_loader=None) -> dict:
             logger.warning("torch.compile failed (%s); running uncompiled", e)
 
     criterion = MultiTaskUncertaintyLoss(
-        tissue_weights=torch.tensor(TISSUE_CLASS_WEIGHTS, dtype=torch.float32),
-        nuclei_weights=torch.tensor(NUCLEI_CLASS_WEIGHTS, dtype=torch.float32),
+        tissue_weights=torch.tensor(cfg.tissue_class_weights, dtype=torch.float32),
+        nuclei_weights=torch.tensor(cfg.nuclei_class_weights, dtype=torch.float32),
+        loss_multipliers=cfg.loss_multipliers,
+        focal_tversky_tissue=cfg.focal_tversky_tissue,
+        focal_tversky_nuclei=cfg.focal_tversky_nuclei,
+        focal_bce=cfg.focal_bce,
+        smooth_l1_beta=cfg.smooth_l1_beta,
     ).to(device)
 
     params = list(model.parameters()) + list(criterion.parameters())
@@ -254,7 +259,7 @@ def main(override_cfg=None, test_loader=None) -> dict:
         steps_per_epoch=max(len(train_loader), 1),
     )
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and cfg.use_fp16)
-    metrics = PUMAMetrics()
+    metrics = PUMAMetrics(selection_score_weights=cfg.selection_score_weights)
 
     best_score = -1.0
     best_epoch = 0

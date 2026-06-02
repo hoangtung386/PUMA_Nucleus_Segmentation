@@ -1,6 +1,5 @@
 """Post-processing: instance segmentation and polygon generation."""
 
-
 import cv2
 import numpy as np
 import torch

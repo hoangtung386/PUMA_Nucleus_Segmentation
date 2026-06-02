@@ -1,5 +1,6 @@
-"""Centralized configuration with sensible defaults — v8 CellPath."""
+"""Centralized configuration with sensible defaults — v9 CellPath."""
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from symbiopan.data.constants import (
     NORMALIZATION_MEAN,
     NORMALIZATION_STD,
     NUCLEI_CLASS_WEIGHTS,
+    NUM_NUCLEI_CLASSES,
+    NUM_TISSUE_CLASSES,
     TISSUE_CLASS_WEIGHTS,
 )
 
@@ -57,20 +60,43 @@ class Stage1Config:
     sc_dfa_full_epoch: int = 22
     sc_dfa_max_weight: float = 0.3
 
+    # ── Model / encoder ──
+    virchow2_model_name: str = "paige-ai/Virchow2"
+    cnn_backbone: str = "convnext_tiny"
     fine_tune_last_n_blocks: int = 6
+    num_tissue: int = NUM_TISSUE_CLASSES
+    num_nuclei: int = NUM_NUCLEI_CLASSES
+    num_sites: int = 9
+    site_embed_dim: int = 256
 
+    # ── Context encoder ──
     use_context_encoder: bool = False
     context_roi_size: int = 320
+
+    # ── Augmentation ──
     use_stain_aug: bool = False
     mixup_prob: float = 0.0
     mixup_alpha: float = 0.2
     cutmix_alpha: float = 1.0
 
+    # ── Sampler ──
     samples_per_epoch_multiplier: float = 1.0
+
+    # ── Hardware ──
     multi_gpu: bool = False
     use_fp16: bool = True
     compile_model: bool = True
     resume: str | None = None
+
+    # ── Loss hyper-parameters ──
+    loss_multipliers: tuple = (2.5, 1.0, 2.8, 1.0, 0.0)
+    focal_tversky_tissue: tuple = (0.30, 0.70, 1.25)
+    focal_tversky_nuclei: tuple = (0.25, 0.75, 1.50)
+    focal_bce: tuple = (0.45, 2.0)
+    smooth_l1_beta: float = 0.5
+
+    # ── Metric weights ──
+    selection_score_weights: tuple = (0.20, 0.25, 0.55)
 
     tissue_class_weights: tuple = field(default_factory=lambda: tuple(TISSUE_CLASS_WEIGHTS))
     nuclei_class_weights: tuple = field(default_factory=lambda: tuple(NUCLEI_CLASS_WEIGHTS))
@@ -80,18 +106,28 @@ class Stage1Config:
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    input_dir: str = "/input/images/melanoma-whole-slide-image"
-    output_dir: str = "/output"
-    cp: str = "/opt/app/checkpoints/best_model.pth"
+    input_dir: str = field(
+        default_factory=lambda: os.environ.get("SYMBIOPAN_INPUT", "/input/images/melanoma-whole-slide-image")
+    )
+    output_dir: str = field(default_factory=lambda: os.environ.get("SYMBIOPAN_OUTPUT", "/output"))
+    cp: str = field(default_factory=lambda: os.environ.get("SYMBIOPAN_CKPT", "/opt/app/checkpoints/best_model.pth"))
+    site_classifier_cp: str = field(
+        default_factory=lambda: os.environ.get("SYMBIOPAN_SITE_CKPT", "/opt/app/checkpoints/site_classifier_atto.pth")
+    )
     tile_size: int = 1024
     overlap: int = 256
     site_type: str | None = None
-    site_classifier_cp: str = "/opt/app/checkpoints/site_classifier_atto.pth"
     site_classifier_arch: str = "convnext_tiny"
     site_classifier_size: int = 256
     use_tta: bool = False
     np_threshold: float = 0.50
     min_nucleus_area: int = 20
+
+    # ── Model architecture (must match training) ──
+    virchow2_model_name: str = "paige-ai/Virchow2"
+    num_tissue: int = NUM_TISSUE_CLASSES
+    num_nuclei: int = NUM_NUCLEI_CLASSES
+    fine_tune_last_n_blocks: int = 6
 
 
 PATHS = PathsConfig()

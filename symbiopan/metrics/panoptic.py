@@ -1,18 +1,31 @@
+"""Validation metrics for panoptic segmentation (Dice + IoU + selection_score)."""
+
 import math
 
 import numpy as np
 import torch
 
-from symbiopan.data.constants import RARE_NUCLEI_IDS, RARE_TISSUE_IDS
+from symbiopan.data.constants import (
+    NUM_NUCLEI_CLASSES,
+    NUM_TISSUE_CLASSES,
+    RARE_NUCLEI_IDS,
+    RARE_TISSUE_IDS,
+)
 
 EPS = 1e-8
+
+DEFAULT_SELECTION_WEIGHTS: tuple[float, float, float] = (0.20, 0.25, 0.55)
 
 
 class SemanticMetricAccumulator:
     """Validation-set level Dice/IoU accumulator."""
 
     def __init__(
-        self, num_classes: int, prefix: str, ignore_index: int | None = 255, device: str | torch.device = "cpu"
+        self,
+        num_classes: int,
+        prefix: str,
+        ignore_index: int | None = 255,
+        device: str | torch.device = "cpu",
     ) -> None:
         self.num_classes = int(num_classes)
         self.prefix = prefix
@@ -27,7 +40,11 @@ class SemanticMetricAccumulator:
         pred_labels = torch.argmax(preds, dim=1) if preds.ndim == targets.ndim + 1 else preds
         pred_labels = pred_labels.detach()
         targets = targets.detach()
-        valid = targets != self.ignore_index if self.ignore_index is not None else torch.ones_like(targets, dtype=torch.bool)
+        valid = (
+            targets != self.ignore_index
+            if self.ignore_index is not None
+            else torch.ones_like(targets, dtype=torch.bool)
+        )
         for k in range(self.num_classes):
             p = (pred_labels == k) & valid
             t = (targets == k) & valid
@@ -70,8 +87,17 @@ class SemanticMetricAccumulator:
 class PUMAMetrics:
     """Convenience wrapper around semantic metric computation for PUMA tasks."""
 
+    def __init__(self, selection_score_weights: tuple[float, float, float] = DEFAULT_SELECTION_WEIGHTS) -> None:
+        if len(selection_score_weights) != 3:
+            raise ValueError("selection_score_weights must have 3 entries (tissue, nuclei, rare).")
+        self.selection_score_weights = tuple(float(x) for x in selection_score_weights)
+
     def new_semantic_accumulator(
-        self, num_classes: int, prefix: str, ignore_index: int | None = 255, device: str | torch.device = "cpu"
+        self,
+        num_classes: int,
+        prefix: str,
+        ignore_index: int | None = 255,
+        device: str | torch.device = "cpu",
     ) -> SemanticMetricAccumulator:
         return SemanticMetricAccumulator(num_classes, prefix, ignore_index=ignore_index, device=device)
 
@@ -94,7 +120,12 @@ class PUMAMetrics:
         return 0.0 if math.isnan(value) else value
 
     def calculate_semantic_metrics(
-        self, logits: torch.Tensor, targets: torch.Tensor, num_classes: int, prefix: str, ignore_index: int | None = 255
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        num_classes: int,
+        prefix: str,
+        ignore_index: int | None = 255,
     ) -> dict[str, float]:
         device = logits.device if torch.is_tensor(logits) else "cpu"
         acc = self.new_semantic_accumulator(num_classes, prefix, ignore_index=ignore_index, device=device)
@@ -102,13 +133,19 @@ class PUMAMetrics:
         return acc.compute()
 
     def calculate_all_metrics(
-        self, preds: dict[str, torch.Tensor], targets: dict[str, torch.Tensor]
+        self,
+        preds: dict[str, torch.Tensor],
+        targets: dict[str, torch.Tensor],
     ) -> dict[str, float]:
         out = {}
-        out.update(self.calculate_semantic_metrics(preds["tissue"], targets["tissue_sem"], 6, "tissue", ignore_index=None))
-        out.update(self.calculate_semantic_metrics(preds["nc"], targets["nuclei_nc"], 10, "nuclei"))
-        tissue_dice = [out.get(f"tissue_dice_{i}", math.nan) for i in range(6)]
-        nuclei_dice = [out.get(f"nuclei_dice_{i}", math.nan) for i in range(10)]
+        out.update(
+            self.calculate_semantic_metrics(
+                preds["tissue"], targets["tissue_sem"], NUM_TISSUE_CLASSES, "tissue", ignore_index=None
+            )
+        )
+        out.update(self.calculate_semantic_metrics(preds["nc"], targets["nuclei_nc"], NUM_NUCLEI_CLASSES, "nuclei"))
+        tissue_dice = [out.get(f"tissue_dice_{i}", math.nan) for i in range(NUM_TISSUE_CLASSES)]
+        nuclei_dice = [out.get(f"nuclei_dice_{i}", math.nan) for i in range(NUM_NUCLEI_CLASSES)]
         rare_tissue_dice = [out.get(f"tissue_dice_{i}", math.nan) for i in sorted(RARE_TISSUE_IDS)]
         rare_nuclei_dice = [out.get(f"nuclei_dice_{i}", math.nan) for i in sorted(RARE_NUCLEI_IDS)]
         rare_dice = rare_tissue_dice + rare_nuclei_dice
@@ -117,7 +154,8 @@ class PUMAMetrics:
         out["rare_tissue_macro_dice"] = self._nan_to_zero(self._nanmean(rare_tissue_dice))
         out["rare_nuclei_macro_dice"] = self._nan_to_zero(self._nanmean(rare_nuclei_dice))
         out["rare_macro_dice"] = self._nan_to_zero(self._nanmean(rare_dice))
+        w_t, w_n, w_r = self.selection_score_weights
         out["selection_score"] = (
-            0.20 * out["avg_tissue_dice"] + 0.25 * out["avg_nuclei_dice"] + 0.55 * out["rare_macro_dice"]
+            w_t * out["avg_tissue_dice"] + w_n * out["avg_nuclei_dice"] + w_r * out["rare_macro_dice"]
         )
         return out

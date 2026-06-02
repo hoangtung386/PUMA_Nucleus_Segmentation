@@ -1,6 +1,5 @@
 """Test-time augmentation for WSI inference."""
 
-
 import torch
 
 TTA_TRANSFORMS = [
@@ -27,7 +26,9 @@ TTA_INVERSE = {
 
 
 @torch.no_grad()
-def apply_tta(model: torch.nn.Module, tensor: torch.Tensor, site_ids: torch.Tensor | None, use_tta: bool = True) -> dict[str, torch.Tensor]:
+def apply_tta(
+    model: torch.nn.Module, tensor: torch.Tensor, site_ids: torch.Tensor | None, use_tta: bool = True
+) -> dict[str, torch.Tensor]:
     from symbiopan.inference.tiling import autocast_enabled
 
     if not use_tta:

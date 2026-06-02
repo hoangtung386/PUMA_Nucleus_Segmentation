@@ -1,6 +1,5 @@
 """SpatialInjector cross-attention bridge for ViT + CNN fusion."""
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

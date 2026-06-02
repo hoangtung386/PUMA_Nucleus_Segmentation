@@ -1,3 +1,4 @@
+"""Multi-task uncertainty loss for panoptic segmentation."""
 
 import torch
 import torch.nn as nn
@@ -10,18 +11,38 @@ logger = get_logger(__name__)
 
 
 class MultiTaskUncertaintyLoss(nn.Module):
+    """Kendall & Gal multi-task uncertainty weighting + optional FocalTversky ramp.
+
+    Tasks (5 entries, last reserved/zero by default):
+        0: tissue segmentation (CE + optional FocalTversky)
+        1: nuclei NP (FocalBCE + SoftDice)
+        2: nuclei NC (CE + optional FocalTversky)
+        3: nuclei HV (SmoothL1 on foreground)
+        4: reserved (multiplier 0.0)
+    """
+
     def __init__(
         self,
         tissue_weights: torch.Tensor | None = None,
         nuclei_weights: torch.Tensor | None = None,
         num_tasks: int = 5,
         ignore_index: int = 255,
+        loss_multipliers: tuple[float, ...] = (2.5, 1.0, 2.8, 1.0, 0.0),
+        focal_tversky_tissue: tuple[float, float, float] = (0.30, 0.70, 1.25),
+        focal_tversky_nuclei: tuple[float, float, float] = (0.25, 0.75, 1.50),
+        focal_bce: tuple[float, float] = (0.45, 2.0),
+        smooth_l1_beta: float = 0.5,
     ) -> None:
         super().__init__()
+        if len(loss_multipliers) != num_tasks:
+            raise ValueError(f"loss_multipliers must have {num_tasks} entries, got {len(loss_multipliers)}")
         self.ignore_index = int(ignore_index)
+        self.num_tasks = int(num_tasks)
         self.log_vars = nn.Parameter(torch.zeros(num_tasks))
         self.use_focal_tversky = False
         self.focal_tversky_weight = 0.0
+        self.loss_multipliers = tuple(float(x) for x in loss_multipliers)
+        self.smooth_l1_beta = float(smooth_l1_beta)
 
         if tissue_weights is None:
             tissue_weights = torch.tensor([1.0, 1.0, 2.0, 3.0, 3.0, 4.0], dtype=torch.float32)
@@ -34,13 +55,16 @@ class MultiTaskUncertaintyLoss(nn.Module):
         self.ce_tissue = SafeCrossEntropyLoss(weight=self.tissue_weights, ignore_index=None)
         self.ce_nc = SafeCrossEntropyLoss(weight=self.nuclei_weights, ignore_index=ignore_index)
 
+        ft_t_a, ft_t_b, ft_t_g = focal_tversky_tissue
+        ft_n_a, ft_n_b, ft_n_g = focal_tversky_nuclei
+        fbce_a, fbce_g = focal_bce
         self.ft_tissue = FocalTverskyLoss(
-            alpha=0.30, beta=0.70, gamma=1.25, ignore_index=None, class_weights=self.tissue_weights
+            alpha=ft_t_a, beta=ft_t_b, gamma=ft_t_g, ignore_index=None, class_weights=self.tissue_weights
         )
         self.ft_nc = FocalTverskyLoss(
-            alpha=0.25, beta=0.75, gamma=1.50, ignore_index=ignore_index, class_weights=self.nuclei_weights
+            alpha=ft_n_a, beta=ft_n_b, gamma=ft_n_g, ignore_index=ignore_index, class_weights=self.nuclei_weights
         )
-        self.np_bce = FocalBCELoss(alpha=0.45, gamma=2.0)
+        self.np_bce = FocalBCELoss(alpha=fbce_a, gamma=fbce_g)
         self.np_dice = SoftDiceLoss()
 
     def set_focal_tversky_weight(self, weight: float) -> None:
@@ -71,14 +95,15 @@ class MultiTaskUncertaintyLoss(nn.Module):
 
         hv_mask = targets["nuclei_np"].unsqueeze(1).bool().expand_as(preds["hv"])
         if torch.any(hv_mask):
-            l_hv = F.smooth_l1_loss(preds["hv"][hv_mask], targets["nuclei_hv"][hv_mask], beta=0.5, reduction="mean")
+            l_hv = F.smooth_l1_loss(
+                preds["hv"][hv_mask], targets["nuclei_hv"][hv_mask], beta=self.smooth_l1_beta, reduction="mean"
+            )
         else:
             l_hv = preds["hv"].sum() * 0.0
 
         losses = [l_tissue, l_np, l_nc, l_hv, torch.tensor(0.0, device=l_tissue.device)]
 
-        multipliers = [2.5, 1.0, 2.8, 1.0, 0.0]
         total = 0.0
         for i, loss in enumerate(losses):
-            total = total + multipliers[i] * (torch.exp(-self.log_vars[i]) * loss + self.log_vars[i])
+            total = total + self.loss_multipliers[i] * (torch.exp(-self.log_vars[i]) * loss + self.log_vars[i])
         return total, [float(x.detach().item()) for x in losses[:4]]

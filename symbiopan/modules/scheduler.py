@@ -1,6 +1,5 @@
 """Warm-up + cosine annealing LR scheduler."""
 
-
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 

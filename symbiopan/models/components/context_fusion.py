@@ -1,6 +1,5 @@
 """ContextFusionModule — FiLM-style conditioning of FPN features using global context descriptors."""
 
-
 import torch
 import torch.nn as nn
 

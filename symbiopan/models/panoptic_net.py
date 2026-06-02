@@ -1,3 +1,5 @@
+"""Top-level panoptic network combining encoder, FPN, decoders, and optional modules."""
+
 from typing import Any
 
 import torch
@@ -19,6 +21,8 @@ class UnifiedPanopticNet(nn.Module):
         cnn_model: Any = None,
         num_tissue: int = 6,
         num_nuclei: int = 10,
+        num_sites: int = 9,
+        site_embed_dim: int = 256,
         fine_tune_last_n_blocks: int = 6,
         load_encoder_weights: bool = True,
         use_context_encoder: bool = False,
@@ -37,10 +41,10 @@ class UnifiedPanopticNet(nn.Module):
 
         self.use_context_encoder = use_context_encoder
         if use_context_encoder:
-            self.context_encoder = ContextEncoder(output_dim=256, output_mode="global")
-            self.context_fusion = ContextFusionModule(context_dim=256, fpn_dim=256)
+            self.context_encoder = ContextEncoder(output_dim=site_embed_dim, output_mode="global")
+            self.context_fusion = ContextFusionModule(context_dim=site_embed_dim, fpn_dim=site_embed_dim)
 
-        self.site_embed = nn.Embedding(num_sites=9, embedding_dim=256)
+        self.site_embed = nn.Embedding(num_embeddings=num_sites, embedding_dim=site_embed_dim)
         self.sc_dfa = SCDFA(num_tissue_classes=num_tissue, num_nuclei_classes=num_nuclei)
         self.use_sc_dfa = False
         self.lambda_sc_dfa = 0.0
@@ -76,9 +80,7 @@ class UnifiedPanopticNet(nn.Module):
             for k in fpn_feats:
                 fpn_feats[k] = fpn_feats[k] + site_bias
 
-        tissue_logits, np_logits, nc_logits, hv_logits = self.decoders(
-            fpn_feats, low_level_feat, vit_intermediate
-        )
+        tissue_logits, np_logits, nc_logits, hv_logits = self.decoders(fpn_feats, low_level_feat, vit_intermediate)
         out_size = images.shape[-2:]
         tissue_logits = F.interpolate(tissue_logits, size=out_size, mode="bilinear", align_corners=False)
         np_logits = F.interpolate(np_logits, size=out_size, mode="bilinear", align_corners=False)

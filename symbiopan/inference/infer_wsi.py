@@ -1,8 +1,7 @@
-"""Main WSI inference pipeline for PUMA Track 2 — v8 CellPath."""
+"""Main WSI inference pipeline for PUMA Track 2 — v9 CellPath."""
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +10,7 @@ import torch
 
 from configs import INFERENCE_DEFAULT_CONFIG
 from symbiopan.common.logging import get_logger
+from symbiopan.data.constants import NUM_TISSUE_CLASSES
 from symbiopan.inference.model_loader import load_stage1
 from symbiopan.inference.postprocessing import (
     classify_instances,
@@ -29,33 +29,39 @@ from symbiopan.inference.tta import apply_tta
 
 logger = get_logger(__name__)
 
-__all__ = ["main"]
+__all__ = ["main", "parse_args"]
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="PUMA Track 2 inference — v8 CellPath")
-    parser.add_argument("--input", default=os.environ.get("SYMBIOPAN_INPUT", "/input/images/melanoma-whole-slide-image"))
-    parser.add_argument("--output", default=os.environ.get("SYMBIOPAN_OUTPUT", "/output"))
-    parser.add_argument("--cp", default=os.environ.get("SYMBIOPAN_CKPT", "checkpoints/best_model.pth"), help="Stage 1 panoptic checkpoint")
-    parser.add_argument("--tile-size", type=int, default=INFERENCE_DEFAULT_CONFIG.tile_size)
-    parser.add_argument("--overlap", type=int, default=INFERENCE_DEFAULT_CONFIG.overlap)
+def parse_args() -> argparse.Namespace:
+    cfg = INFERENCE_DEFAULT_CONFIG
+    parser = argparse.ArgumentParser(description="PUMA Track 2 inference — v9 CellPath")
+    parser.add_argument("--input", default=cfg.input_dir, help="Directory containing the WSI TIFF")
+    parser.add_argument("--output", default=cfg.output_dir, help="Output directory for masks + polygons")
+    parser.add_argument("--cp", default=cfg.cp, help="Stage 1 panoptic checkpoint")
+    parser.add_argument("--tile-size", type=int, default=cfg.tile_size)
+    parser.add_argument("--overlap", type=int, default=cfg.overlap)
     parser.add_argument(
         "--site-type", choices=["primary", "metastatic"], default=None, help="Manual site-type override"
     )
-    parser.add_argument("--site-classifier-cp", default=INFERENCE_DEFAULT_CONFIG.site_classifier_cp)
-    parser.add_argument("--site-classifier-arch", default=INFERENCE_DEFAULT_CONFIG.site_classifier_arch)
-    parser.add_argument("--site-classifier-size", type=int, default=INFERENCE_DEFAULT_CONFIG.site_classifier_size)
-    parser.add_argument("--np-threshold", type=float, default=INFERENCE_DEFAULT_CONFIG.np_threshold)
-    parser.add_argument("--min-nucleus-area", type=int, default=INFERENCE_DEFAULT_CONFIG.min_nucleus_area)
+    parser.add_argument("--site-classifier-cp", default=cfg.site_classifier_cp)
+    parser.add_argument("--site-classifier-arch", default=cfg.site_classifier_arch)
+    parser.add_argument("--site-classifier-size", type=int, default=cfg.site_classifier_size)
+    parser.add_argument("--np-threshold", type=float, default=cfg.np_threshold)
+    parser.add_argument("--min-nucleus-area", type=int, default=cfg.min_nucleus_area)
     parser.add_argument("--tta", action="store_true", default=False, help="Enable test-time augmentation (8 augs)")
     return parser.parse_args()
 
 
 @torch.no_grad()
-def run_tile(model_s1, tile_uint8, tensor, device, site_id, use_tta):
+def run_tile(
+    model_s1: torch.nn.Module,
+    tensor: torch.Tensor,
+    device: torch.device,
+    site_id: int | None,
+    use_tta: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     site_ids = torch.tensor([site_id], device=device) if site_id is not None else None
     preds = apply_tta(model_s1, tensor, site_ids, use_tta=use_tta)
-
     tissue_logits = preds["tissue"][0].cpu().numpy()
     np_logits = preds["np"][0, 0].cpu().numpy()
     nc_logits = preds["nc"][0].cpu().numpy()
@@ -64,8 +70,18 @@ def run_tile(model_s1, tile_uint8, tensor, device, site_id, use_tta):
 
 
 def process_image(
-    input_path, output_dir, model_s1, device, tile_size, overlap, site_id, np_threshold, min_nucleus_area, use_tta
-):
+    input_path: Path,
+    output_dir: str | Path,
+    model_s1: torch.nn.Module,
+    device: torch.device,
+    tile_size: int,
+    overlap: int,
+    site_id: int | None,
+    np_threshold: float,
+    min_nucleus_area: int,
+    use_tta: bool,
+    num_tissue: int = NUM_TISSUE_CLASSES,
+) -> None:
     img = read_rgb_uint8(input_path)
     h, w = img.shape[:2]
     logger.info("Processing %s: %dx%d | site_id=%s", input_path.name, h, w, site_id)
@@ -76,9 +92,9 @@ def process_image(
 
     rows = make_tile_starts(h, tile_size, stride)
     cols = make_tile_starts(w, tile_size, stride)
-    tissue_acc = np.zeros((6, h, w), dtype=np.float32)
+    tissue_acc = np.zeros((num_tissue, h, w), dtype=np.float32)
     tissue_count = np.zeros((h, w), dtype=np.float32)
-    polygons = []
+    polygons: list[dict] = []
     half = overlap // 2
 
     for ri, r in enumerate(rows):
@@ -87,14 +103,7 @@ def process_image(
             tile = img[r : min(r + tile_size, h), c : min(c + tile_size, w)]
             tile, real_h, real_w = pad_reflect(tile, tile_size)
             tensor = normalize_tile(tile, device)
-            t_logits, np_logit, nc_logits, hv = run_tile(
-                model_s1,
-                tile,
-                tensor,
-                device,
-                site_id,
-                use_tta,
-            )
+            t_logits, np_logit, nc_logits, hv = run_tile(model_s1, tensor, device, site_id, use_tta)
 
             t_logits = t_logits[:, :real_h, :real_w]
             np_logit = np_logit[:real_h, :real_w]
@@ -127,7 +136,7 @@ def process_image(
     logger.info("Saved nuclei JSON: %s (%d polygons)", json_path, len(polygons))
 
 
-def main():
+def main() -> None:
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
@@ -138,16 +147,13 @@ def main():
     model_s1 = load_stage1(args.cp, device)
     site_id = resolve_site_type(args, {}, image_rgb, device)
 
-    tile_size = int(getattr(args, "tile_size", 1024))
-    overlap = int(getattr(args, "overlap", 256))
-
     process_image(
         input_path=input_path,
         output_dir=args.output,
         model_s1=model_s1,
         device=device,
-        tile_size=tile_size,
-        overlap=overlap,
+        tile_size=int(args.tile_size),
+        overlap=int(args.overlap),
         site_id=site_id,
         np_threshold=args.np_threshold,
         min_nucleus_area=args.min_nucleus_area,
