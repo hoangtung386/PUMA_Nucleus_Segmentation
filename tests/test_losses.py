@@ -1,6 +1,7 @@
 import torch
 
-from utils.losses import FocalBCELoss, FocalTverskyLoss, MultiTaskUncertaintyLoss, SafeCrossEntropyLoss, SoftDiceLoss
+from symbiopan.losses.multitask import MultiTaskUncertaintyLoss
+from symbiopan.losses.segmentation import FocalBCELoss, FocalTverskyLoss, SafeCrossEntropyLoss, SoftDiceLoss
 
 
 def test_safe_cross_entropy_ignores_index():

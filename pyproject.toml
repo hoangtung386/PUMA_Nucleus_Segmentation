@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "symbiopan"
-version = "8.0.0"
-description = "CellPath — PUMA Grand Challenge Track 2 Panoptic Segmentation (v8)"
+version = "9.0.0"
+description = "CellPath — PUMA Grand Challenge Track 2 Panoptic Segmentation (v9)"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
@@ -32,18 +32,54 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
+    "jupyter",
+    "ipykernel",
 ]
+
+[project.scripts]
+symbiopan-preprocess = "scripts.preprocess:main"
+symbiopan-train = "scripts.train_stage1:main"
+symbiopan-infer = "scripts.infer_wsi:main"
+
+[tool.setuptools.packages.find]
+include = ["symbiopan*", "configs*"]
+exclude = ["tests*", "notebooks*", "scripts*"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "B", "UP", "N", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["B011", "N806"]
+"symbiopan/**/*.py" = ["N812"]
 
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests",
+]
+
+[tool.coverage.run]
+source = ["symbiopan"]
+omit = ["*/tests/*", "*/notebooks/*"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

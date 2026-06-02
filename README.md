@@ -1,15 +1,14 @@
-# SymbioPan v8 "CellPath" — PUMA Track 2 Panoptic Segmentation
+# SymbioPan v9 — PUMA Track 2 Panoptic Segmentation
 
 Single-stage panoptic segmentation pipeline for the [PUMA Grand Challenge](https://puma.grand-challenge.org/) (Track 2: 10-class nuclei + 5-class tissue), built on **Virchow2 ViT-H/14 + ConvNeXt-Tiny** with **context ROI encoding** and **test-time augmentation**.
 
-**Architecture highlights vs. v7:**
-- Virchow2 ViT-H/14 (fine-tune last 6 blocks) — replaces frozen UNI ViT-L/16
-- ConvNeXt-Tiny (28.6M params) — replaces ConvNeXt-Atto (3.7M params)
-- CellViT++ nuclei decoder + DeepLabV3+ tissue decoder — replaces plain ASPP
-- Context ROI encoder (EfficientNet-B0, 5120×5120→320×320) — new
-- TTA (8 augmentations) — replaces Stage 2 refiner
-- Stain augmentation (HEStain) — new training improvement
-- Warm-up + cosine decay LR schedule
+**Key features:**
+- Virchow2 ViT-H/14 encoder (fine-tune last 6 blocks) + ConvNeXt-Tiny backbone
+- CellViT++ nuclei decoder + DeepLabV3+ tissue decoder
+- Context ROI encoder (EfficientNet-B0, 5120→320)
+- TTA (8 geometric augmentations with inverse averaging)
+- Stain augmentation, warm-up + cosine decay LR
+- Group-based leakage-safe data split
 
 ## Quick Start
 
@@ -19,44 +18,29 @@ pip install -e ".[dev]"
 
 ### Preprocess
 ```bash
-# Expects: Dataset/01_training_dataset_tif_ROIs/*.tif
-#          Dataset/01_training_dataset_geojson_tissue/*_tissue.geojson
-#          Dataset/01_training_dataset_geojson_nuclei/*_nuclei.geojson
-#          Dataset/01_training_dataset_tif_context_ROIs/*_context.tif (optional)
-python -m data.preprocessing.preprocess
+# Expects data in Dataset/01_training_dataset_tif_ROIs/*.tif + GeoJSON annotations
+python -m scripts.preprocess
+# Or: symbiopan-preprocess
 ```
-
-Configurable via `PreprocessConfig` in `configs/defaults.py`: tile size, rare-crop generation.
 
 ### Train
 ```bash
-python scripts/run_stage1.py
-# Optional overrides:
-#   --epochs 50 --lr 1e-4 --batch-size 8 --val-ratio 0.2
-#   --use-context-encoder --use-stain-aug
-#   --resume checkpoints/puma_epoch_last_s1.pth
+python -m scripts.train_stage1
+# Or: symbiopan-train
 ```
-
-Saves `checkpoints/puma_epoch_best_s1.pth` and `puma_epoch_last_s1.pth`.
 
 ### Inference
 ```bash
-python scripts/run_inference.py \
-  --input <tif_dir> --output <out_dir> \
-  --cp checkpoints/best_model.pth \
-  [--site-type primary|metastatic] \
-  [--use-tta] \
-  [--tile-size 1024] [--overlap 256] \
-  [--np-threshold 0.50]
+python -m scripts.infer_wsi --input <tif_dir> --output <out_dir> --cp checkpoints/best_model.pth
+# Or: symbiopan-infer --input <tif_dir> --output <out_dir> --cp checkpoints/best_model.pth
 ```
 
-### Docker Inference
+### Docker
 ```bash
-make docker-build
-make docker-run
+make docker-build && make docker-run
 ```
 
-### Run Tests
+### Tests
 ```bash
 python -m pytest tests/
 ```
@@ -65,178 +49,79 @@ python -m pytest tests/
 
 ```
 SymbioPan/
-├── README.md
-├── docs/
-│   └── architecture.md              # Full model architecture diagram (Mermaid)
-├── requirements.txt
-├── pyproject.toml
+├── symbiopan/                       # Main package
+│   ├── common/                      #   logging, device, types, exceptions
+│   ├── data/                        #   constants, dataset, transforms, preprocessing
+│   ├── models/                      #   encoder, backbone, decoders, FPN, panoptic_net
+│   ├── inference/                   #   model_loader, tiling, postproc, TTA, infer_wsi
+│   ├── training/                    #   train_loop, checkpoint, GPU setup, stage1 trainer
+│   ├── losses/                      #   segmentation (CE/Tversky/Dice/BCE), multitask
+│   ├── metrics/                     #   PUMAMetrics, SemanticMetricAccumulator
+│   └── modules/                     #   SC-DFA, scheduler, split
+├── configs/                         # Frozen dataclass configs (PathsConfig, Stage1Config, ...)
+├── scripts/                         # CLI entry points
+├── tests/                           # Pytest suite (28 tests)
+├── notebooks/                       # Jupyter notebooks
+├── docs/                            # Architecture, changelog, refactoring guide
+├── Dataset/                         # Raw PUMA data (gitignored)
+├── output/                          # Inference results (gitignored)
+├── checkpoints/                     # Model weights (gitignored)
 ├── Dockerfile
 ├── Makefile
 ├── inference.sh
-│
-├── configs/
-│   ├── __init__.py
-│   └── defaults.py               # Stage1Config, PreprocessConfig, InferenceConfig
-│
-├── data/
-│   ├── __init__.py
-│   ├── constants.py               # Label mappings, rare-class IDs, normalization
-│   ├── dataset/
-│   │   ├── __init__.py
-│   │   ├── puma_dataset.py        # PUMADataset with context ROI + 9-class site
-│   │   ├── transforms.py          # Albumentations (vector-safe, stain aug)
-│   │   └── sampling.py            # Rare-weighted sample weights
-│   └── preprocessing/
-│       ├── __init__.py
-│       ├── geojson_parser.py
-│       ├── flow_generator.py      # HV map computation only
-│       └── preprocess.py
-│
-├── models/
-│   ├── __init__.py
-│   ├── encoder.py                 # Virchow2 ViT-H/14 + fine-tune + multi-block features
-│   ├── backbone.py                # ConvNeXt-Tiny
-│   ├── fpn_aggregator.py          # HierarchicalFPN (multi-scale ViT + CNN)
-│   ├── decoders.py                # DeepLabV3+ tissue + CellViT++ nuclei + BoundaryAttn
-│   ├── cross_attention.py         # SpatialInjector
-│   ├── panoptic_net.py            # UnifiedPanopticNet (main model)
-│   └── components/
-│       ├── __init__.py
-│       ├── boundary_attention.py
-│       ├── context_encoder.py     # EfficientNet-B0 for context ROIs
-│       └── context_fusion.py      # FiLM-style context conditioning
-│
-├── training/
-│   ├── __init__.py
-│   ├── train_loop.py
-│   ├── checkpoint.py
-│   ├── gpu_setup.py
-│   ├── logging_utils.py
-│   ├── cli.py
-│   └── stage1_trainer.py
-│
-├── inference/
-│   ├── __init__.py
-│   ├── infer_wsi.py               # TTA (8 augs), no Stage 2
-│   ├── model_loader.py
-│   ├── tiling.py
-│   ├── site_classifier.py         # 9-class site classifier
-│   └── postprocessing.py
-│
-├── utils/
-│   ├── __init__.py
-│   ├── losses.py                  # MultiTaskUncertaintyLoss + boundary-aware
-│   ├── metrics.py
-│   ├── sc_dfa.py
-│   ├── split_utils.py
-│   └── scheduler_utils.py         # Warm-up + cosine decay
-│
-├── scripts/
-│   ├── run_preprocess.py
-│   ├── run_stage1.py
-│   └── run_inference.py
-│
-├── notebooks/
-│   └── train_model.ipynb
-│
-├── tests/
-│   ├── test_dataset.py
-│   ├── test_inference.py
-│   ├── test_losses.py
-│   ├── test_metrics.py
-│   └── test_models.py
-│
-├── checkpoints/                   # Training output (gitignored)
-├── dataset_processed/             # Preprocessed .npy files (gitignored)
-└── output/                        # Inference output (gitignored)
+├── pyproject.toml
+└── LICENSE
 ```
 
-## Pipeline Overview
+## Pipeline
 
 ### 1. Data Preprocessing
-- Reads raw TIFF ROIs + GeoJSON annotations
-- Rasterizes polygons → semantic/instance masks
-- Computes HoVer distance maps (no Cellpose)
-- Generates rare-centered augmented crops
-- Writes `.npy` files + `sample_metadata.json`
+Reads raw TIFF ROIs + GeoJSON annotations → rasterizes masks → computes HoVer distance maps → generates rare-centered augmented crops → writes `.npy` files.
 
-### 2. Training — UnifiedPanopticNet (single stage)
+### 2. Training
 - **Encoder**: Virchow2 ViT-H/14 (fine-tune last 6 blocks) + ConvNeXt-Tiny with 4 SpatialInjector bridges
 - **Neck**: HierarchicalFPN — 5-level FPN (P1–P5) with multi-scale ViT features
-- **Decoders**: DeepLabV3+ tissue head + CellViT++ nuclei decoder (NC/NP/HV) + BoundaryAttentionModule
-- **Context ROI**: Optional EfficientNet-B0 encoder for 5120×5120 context
+- **Decoders**: DeepLabV3+ tissue head + CellViT++ nuclei decoder (NC/NP/HV)
 - **Rare-class focus**: WeightedRandomSampler, Focal Tversky loss with smooth ramp, stain augmentation
 
 ### 3. Inference
-- Sliding-window tiling with configurable overlap
-- Optional site-type classifier (9-class)
-- Optional TTA (8 geometric augmentations with inverse transform + averaging)
-- HV watershed instance segmentation → polygon output
+Sliding-window tiling → optional site classifier → optional TTA → HV watershed instance segmentation → polygon GeoJSON output.
 
 ## Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| **No tissue background channel** | 5 classes directly; background is ignore index 255 |
-| **Virchow2 ViT-H/14** | SOTA foundation model for pathology (3.1M WSIs, 632M params) — replaces UNI |
+| **Background is class 0** | 6-class tissue_sem (0=background, 1–5=tissue types), background is **not** ignore_index 255 |
+| **Virchow2 ViT-H/14** | SOTA foundation model for pathology (3.1M WSIs, 632M params) |
 | **ConvNeXt-Tiny** | 7× more capacity than Atto for spatial features |
 | **Fine-tune last 6 ViT blocks** | Adapts to dense prediction without catastrophic forgetting |
 | **Context ROI** | 5× larger field-of-view for tissue type disambiguation |
 | **TTA replaces Stage 2** | 8-aug averaging gives +2-3% without additional training |
-| **SC-DFA** | Learns tissue→nuclei co-occurrence patterns via 5×10 weight matrix |
-| **Smooth loss schedules** | Focal Tversky + SC-DFA ramped linearly to avoid training shocks |
-| **Group-based split** | All rare crops stay with their source image; validation uses originals only |
+| **Group-based split** | All rare crops stay with their source image; never leak between train/val |
 
 ## Configuration
 
 All parameters in `configs/defaults.py` as `@dataclass(frozen=True)`:
-- `Stage1Config` — training hyperparameters
-- `PreprocessConfig` — preprocessing parameters
-- `InferenceConfig` — inference parameters
-
-## Inference CLI Reference
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--input` | `/input/images/...` | TIFF input directory |
-| `--output` | `/output` | Output directory |
-| `--cp` | `checkpoints/best_model.pth` | Panoptic checkpoint |
-| `--tile-size` | `1024` | Sliding window tile size |
-| `--overlap` | `256` | Tile overlap in pixels |
-| `--site-type` | auto-detect | `primary` \| `metastatic` override |
-| `--site-classifier-cp` | `checkpoints/site_classifier_atto.pth` | Site classifier |
-| `--use-tta` | `False` | Enable 8-augmentation test-time augmentation |
-| `--np-threshold` | `0.50` | Nuclei probability threshold |
-| `--min-nucleus-area` | `20` | Minimum nucleus area in pixels |
-
-## VRAM Requirements (RTX 3080 10GB)
-
-| Setting | Batch Size | Notes |
-|---------|-----------|-------|
-| Virchow2 frozen (inference) | 1-2 | FP16 autocast |
-| Virchow2 fine-tune (6 blocks) | 1 | FP16 + grad checkpointing |
-| No Virchow2 (ConvNeXt-Tiny only) | 8-16 | Full training |
+- `PathsConfig` — data directory paths
+- `PreprocessConfig` — preprocessing parameters (tile size, rare-crop generation)
+- `Stage1Config` — training hyperparameters (LR, epochs, loss weights, augmentation)
+- `InferenceConfig` — inference parameters (tile size, overlap, thresholds)
 
 ## Version History
 
-### v8 "CellPath" — Current
-- Virchow2 ViT-H/14 encoder with fine-tuning
-- ConvNeXt-Tiny backbone
-- DeepLabV3+ tissue decoder + CellViT++ nuclei decoder
-- Context ROI encoder (EfficientNet-B0)
-- Stain augmentation (HEStain)
-- Warm-up + cosine decay LR
-- TTA (8 augmentations)
-- Full codebase cleanup: no Cellpose, no Stage 2, all lint clean
+See [docs/CHANGELOG.md](docs/CHANGELOG.md) for full details.
 
-### v7 — Previous
-- Frozen UNI ViT-L/16 encoder
-- ConvNeXt-Atto backbone
-- Cellpose flow generation + Stage 2 refinement
-- SpatialLogitAdjuster (2-class prior)
-- Cosine annealing LR (no warm-up)
+### v9 (current)
+- **Major refactor**: restructured into `symbiopan/` package, removed all dead code, fixed inversion of dependency, added CHANGELOG + conftest, updated all tests.
+
+### v8 (previous)
+- Virchow2 ViT-H/14 + ConvNeXt-Tiny, CellViT++/DeepLabV3+ decoders, TTA, stain augmentation, context ROI.
+
+### v7 (older)
+- Frozen UNI ViT-L/16, ConvNeXt-Atto, Cellpose flow, Stage 2 refinement, cosine annealing.
 
 ## References
+
 - [PUMA Grand Challenge](https://puma.grand-challenge.org/)
 - [Virchow2](https://huggingface.co/paige-ai/Virchow2) (Paige AI)
 - [CellViT++](https://github.com/TIO-IKIM/CellViT)
