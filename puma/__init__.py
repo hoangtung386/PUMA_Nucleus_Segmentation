@@ -1,3 +1,3 @@
-"""PUMA Track 2 two-stage nuclei detection and classification package."""
+"""PUMA V13.2 two-stage nuclei detection and classification package."""
 
-__version__ = "3.0.0"
+__version__ = "13.2.0"

@@ -85,16 +85,26 @@ def create_runtime(
     *,
     run_folds: Iterable[int] = (0, 1, 2, 3, 4),
     seeds: Iterable[int] = (0,),
-    epochs: int = 30,
-    effective_batch_size: int = 32,
-    stage1_micro_batch_size: int = 2,
-    stage2_micro_batch_size: int = 32,
+    stage1_epochs: int = 40,
+    stage2_epochs: int = 50,
+    stage1_effective_batch_size: int = 16,
+    stage2_effective_batch_size: int = 256,
+    stage1_micro_batch_size: int = 16,
+    stage2_micro_batch_size: int = 256,
     preprocessing_workers: int = 0,
-    early_stopping_enabled: bool = True,
-    early_stopping_patience: int = 10,
-    early_stopping_min_delta: float = 0.0,
+    stage1_early_stopping_enabled: bool = True,
+    stage1_early_stopping_patience: int = 10,
+    early_stopping_enabled: bool = False,
+    early_stopping_patience: int = 15,
+    early_stopping_min_delta: float = 0.001,
 ) -> RuntimeConfig:
-    """Build and validate the shared project configuration used by every notebook."""
+    """Build and validate the shared V13.2 runtime.
+
+    Stage 1 and Stage 2 deliberately have independent effective batch sizes.  V13.2
+    fixes Stage-1 effective batch to 16 and Stage-2 effective batch to 256 by default.
+    Physical micro-batches can be lowered after CUDA OOM while preserving the effective
+    optimizer batch through gradient accumulation.
+    """
     project_root = Path(root or Path.cwd()).expanduser().resolve()
     configure_project_checkpoint_cache(project_root)
     runtime = RuntimeConfig(
@@ -110,10 +120,14 @@ def create_runtime(
     )
     runtime.training.run_folds = validate_folds(run_folds, runtime.data.number_of_folds)
     runtime.training.seeds = tuple(int(seed) for seed in seeds)
-    runtime.training.epochs = int(epochs)
-    runtime.training.effective_batch_size = int(effective_batch_size)
+    runtime.training.stage1_epochs = int(stage1_epochs)
+    runtime.training.stage2_epochs = int(stage2_epochs)
+    runtime.training.stage1_effective_batch_size = int(stage1_effective_batch_size)
+    runtime.training.stage2_effective_batch_size = int(stage2_effective_batch_size)
     runtime.training.stage1_micro_batch_size = int(stage1_micro_batch_size)
     runtime.training.stage2_micro_batch_size = int(stage2_micro_batch_size)
+    runtime.training.stage1_early_stopping_enabled = bool(stage1_early_stopping_enabled)
+    runtime.training.stage1_early_stopping_patience = int(stage1_early_stopping_patience)
     runtime.training.early_stopping_enabled = bool(early_stopping_enabled)
     runtime.training.early_stopping_patience = int(early_stopping_patience)
     runtime.training.early_stopping_min_delta = float(early_stopping_min_delta)
@@ -121,25 +135,25 @@ def create_runtime(
 
     if not runtime.training.seeds:
         raise ValueError("At least one random seed is required.")
-    if runtime.training.epochs <= 0:
-        raise ValueError(f"epochs must be positive, got {runtime.training.epochs}")
-    if runtime.training.effective_batch_size <= 0:
-        raise ValueError("effective_batch_size must be positive.")
-    for name, value in (
-        ("stage1_micro_batch_size", runtime.training.stage1_micro_batch_size),
-        ("stage2_micro_batch_size", runtime.training.stage2_micro_batch_size),
+    if runtime.training.stage1_epochs <= 0:
+        raise ValueError(f"stage1_epochs must be positive, got {runtime.training.stage1_epochs}")
+    if runtime.training.stage2_epochs not in {50, 100}:
+        raise ValueError(
+            f"V13.2 Stage-2 epochs must be exactly 50 (screening) or 100 (winner), "
+            f"got {runtime.training.stage2_epochs}."
+        )
+    for stage, effective, micro in (
+        ("stage1", runtime.training.stage1_effective_batch_size, runtime.training.stage1_micro_batch_size),
+        ("stage2", runtime.training.stage2_effective_batch_size, runtime.training.stage2_micro_batch_size),
     ):
-        if value <= 0:
-            raise ValueError(f"{name} must be positive, got {value}")
-        if value > runtime.training.effective_batch_size:
+        if effective <= 0 or micro <= 0:
+            raise ValueError(f"{stage} batch sizes must be positive, got effective={effective}, micro={micro}.")
+        if micro > effective:
+            raise ValueError(f"{stage}_micro_batch_size={micro} cannot exceed effective batch={effective}.")
+        if effective % micro != 0:
             raise ValueError(
-                f"{name}={value} cannot exceed effective_batch_size="
-                f"{runtime.training.effective_batch_size}."
-            )
-        if runtime.training.effective_batch_size % value != 0:
-            raise ValueError(
-                f"effective_batch_size={runtime.training.effective_batch_size} must be divisible "
-                f"by {name}={value} so gradient accumulation is exact."
+                f"{stage} effective batch={effective} must be divisible by micro batch={micro} "
+                "so gradient accumulation is exact."
             )
     if runtime.training.validation_interval <= 0:
         raise ValueError("validation_interval must be positive.")
@@ -147,8 +161,19 @@ def create_runtime(
         raise ValueError("early_stopping_patience must be positive.")
     if runtime.training.early_stopping_min_delta < 0:
         raise ValueError("early_stopping_min_delta cannot be negative.")
+    if runtime.training.resume_checkpoint_interval <= 0:
+        raise ValueError("resume_checkpoint_interval must be positive.")
     if runtime.data.preprocessing_workers < 0:
         raise ValueError("preprocessing_workers must be 0 (all logical cores) or a positive integer.")
+    sampling_sum = (
+        runtime.data.background_fraction
+        + runtime.data.density_fraction
+        + runtime.data.small_nucleus_fraction
+        + runtime.data.uniform_fraction
+        + runtime.data.rare_nucleus_fraction
+    )
+    if abs(sampling_sum - 1.0) > 1e-6:
+        raise ValueError(f"Stage-1 sampling fractions must sum to 1.0, got {sampling_sum:.6f}.")
     return runtime
 
 

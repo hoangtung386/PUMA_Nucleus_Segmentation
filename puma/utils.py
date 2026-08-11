@@ -216,22 +216,28 @@ def resolve_artifact_reference(
     value: Any,
     artifact_dirs: Path | Iterable[Path],
 ) -> Path | None:
-    """Resolve a saved artifact across configured output search folders."""
+    """Resolve an artifact strictly inside the configured canonical output folders.
+
+    Saved CSV/lock paths may be absolute paths from an older project location.  We use
+    only their basename and rebase into the current canonical directories.  This prevents
+    deleted current output folders from silently reusing a legacy checkpoint elsewhere.
+    """
     text = str(value or "").strip()
     if not text or text.lower() == "nan":
         return None
     saved = Path(text).expanduser()
-    if saved.exists():
-        return saved
     if isinstance(artifact_dirs, (str, Path)):
         search_dirs = (Path(artifact_dirs),)
     else:
         search_dirs = tuple(Path(directory) for directory in artifact_dirs)
+    if not search_dirs:
+        return saved if saved.exists() else saved
     for directory in search_dirs:
         rebased = directory / saved.name
         if rebased.exists():
             return rebased
-    return saved
+    # Return the canonical expected location even when missing so callers can report it.
+    return search_dirs[0] / saved.name
 
 
 def canonical_json(value: Any) -> str:

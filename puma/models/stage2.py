@@ -639,6 +639,11 @@ class ScaleFusePFM(nn.Module):
             raise ValueError(
                 f"Unsupported type_loss_key={self.cfg.type_loss_key!r}."
             )
+        if self.cfg.validity_loss_key != "BCE":
+            raise ValueError(
+                "V13.2 implements BCE validity loss only; "
+                f"got validity_loss_key={self.cfg.validity_loss_key!r}."
+            )
         pooled_feature_multiplier(self.cfg.pooling_key)
         if self.cfg.encoder_micro_batch_size <= 0:
             raise ValueError("encoder_micro_batch_size must be positive.")

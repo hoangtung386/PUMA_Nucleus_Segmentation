@@ -21,6 +21,9 @@ PUMA_CLASS_TO_ID: dict[str, int] = {name: i for i, name in enumerate(PUMA_CLASS_
 REJECT_CLASS_ID = len(PUMA_CLASS_NAMES)
 PUMA_MICRONS_PER_PIXEL = 0.23
 STAGE2_GEOMETRY_NAMES: tuple[str, ...] = (
+    # PUMA training and challenge inference both operate on 1024x1024 ROIs.
+    # Keep the original 7-D ROI geometry so Stage-2 sees the same feature semantics
+    # during training, validation, local inference, and Grand-Challenge inference.
     "log_nearest_distance",
     "local_density",
     "detector_confidence",
@@ -60,8 +63,8 @@ class PathConfig:
         "stage1_oof_candidates_metadata.json",
     )
     _STAGE2_SMALL_OUTPUTS: ClassVar[tuple[str, ...]] = (
-        "stage2_v13_lock.json",
-        "stage2_v13_final_lock.json",
+        "stage2_v132_lock.json",
+        "stage2_v132_final_lock.json",
     )
 
     def __post_init__(self) -> None:
@@ -117,11 +120,6 @@ class PathConfig:
     def preprocessing_dir(self) -> Path:
         return self.artifact_dir
 
-    @property
-    def legacy_training_output_dir(self) -> Path:
-        """Fallback location for existing training artifacts."""
-        return self.root / "PUMA_training_outputs"
-
     def ensure(self) -> None:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.stage1_output_dir.mkdir(parents=True, exist_ok=True)
@@ -144,32 +142,17 @@ class PathConfig:
         self.ensure()
         return self.stage2_output_dir / name
 
-    @staticmethod
-    def _deduplicate_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
-        unique: list[Path] = []
-        seen: set[str] = set()
-        for candidate in paths:
-            key = str(candidate.resolve())
-            if key not in seen:
-                unique.append(candidate)
-                seen.add(key)
-        return tuple(unique)
-
     def stage1_output_search_dirs(self) -> tuple[Path, ...]:
+        # One canonical training-output location. Deleting this directory must
+        # intentionally force a fresh Stage-1 run rather than reuse legacy files.
         self.ensure()
-        return self._deduplicate_paths((
-            self.stage1_output_dir,
-            self.legacy_training_output_dir,
-            self.artifact_dir,
-        ))
+        return (self.stage1_output_dir,)
 
     def stage2_output_search_dirs(self) -> tuple[Path, ...]:
+        # One canonical training-output location. Deleting this directory must
+        # intentionally force a fresh Stage-2 run rather than reuse legacy files.
         self.ensure()
-        return self._deduplicate_paths((
-            self.stage2_output_dir,
-            self.legacy_training_output_dir,
-            self.artifact_dir,
-        ))
+        return (self.stage2_output_dir,)
 
     def stage1_existing_file(self, name: str) -> Path:
         if Path(name).name in self._STAGE1_SMALL_OUTPUTS:
@@ -209,10 +192,11 @@ class DataConfig:
     tile_overlap: int = 128
     tiles_per_roi_per_epoch: int = 8
     validation_tile_batch_size: int = 4
-    background_fraction: float = 0.10
+    background_fraction: float = 0.05
     density_fraction: float = 0.30
     small_nucleus_fraction: float = 0.20
-    uniform_fraction: float = 0.40
+    uniform_fraction: float = 0.30
+    rare_nucleus_fraction: float = 0.15
     use_reflection_padding: bool = True
     class_map_background_id: int = 255
     fail_on_annotation_error: bool = True
@@ -224,31 +208,38 @@ class TrainingConfig:
 
     run_folds: tuple[int, ...] = (0, 1, 2, 3, 4)
     seeds: tuple[int, ...] = (0,)
-    epochs: int = 30
-    effective_batch_size: int = 32
-    stage1_micro_batch_size: int = 2
-    stage2_micro_batch_size: int = 32
+    stage1_epochs: int = 40
+    stage2_epochs: int = 50
+    stage1_effective_batch_size: int = 16
+    stage2_effective_batch_size: int = 256
+    stage1_micro_batch_size: int = 16
+    stage2_micro_batch_size: int = 256
     number_of_workers: int = 2
     amp: bool = True
     prefer_bfloat16: bool = True
     deterministic: bool = True
-    validation_interval: int = 1
-    early_stopping_enabled: bool = True
-    early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 0.0
+    validation_interval: int = 2
+    stage1_early_stopping_enabled: bool = True
+    stage1_early_stopping_patience: int = 10
+    early_stopping_enabled: bool = False
+    early_stopping_patience: int = 15
+    early_stopping_min_delta: float = 0.001
     gradient_clip_norm: float = 1.0
     save_best_only: bool = True
     resume_from_results_csv: bool = True
-    threshold_grid: tuple[float, ...] = (0.15, 0.20, 0.25, 0.30, 0.40, 0.50)
+    resume_checkpoint_interval: int = 1
+    threshold_grid: tuple[float, ...] = (0.12, 0.15, 0.18, 0.20, 0.25, 0.30, 0.40)
     local_max_radius_grid: tuple[int, ...] = (2, 3, 4, 5)
+    suppression_radius_grid: tuple[float, ...] = (3.0, 4.0, 5.0, 6.0)
+    stage1_recall_tolerance: float = 0.005
 
     @property
     def stage1_accumulation_steps(self) -> int:
-        return max(1, self.effective_batch_size // self.stage1_micro_batch_size)
+        return max(1, self.stage1_effective_batch_size // self.stage1_micro_batch_size)
 
     @property
     def stage2_accumulation_steps(self) -> int:
-        return max(1, self.effective_batch_size // self.stage2_micro_batch_size)
+        return max(1, self.stage2_effective_batch_size // self.stage2_micro_batch_size)
 
 
 @dataclass(slots=True)
@@ -271,7 +262,7 @@ def stage1_model_config_from_dict(payload: dict[str, Any]) -> Stage1ModelConfig:
 
 @dataclass(slots=True)
 class Stage2ModelConfig:
-    """Configuration for one V13 UNI2-h experiment."""
+    """Configuration for one V13.2 UNI2-h experiment."""
 
     name: str
     pfm_key: str = "uni2_h"
@@ -289,22 +280,37 @@ class Stage2ModelConfig:
     hidden_dim: int = 512
     fusion_layers: int = 2
     learning_rate: float = 1e-4
-    lora_learning_rate: float = 1e-5
+    validity_learning_rate: float = 1e-4
     weight_decay: float = 1e-4
-    warmup_epochs: int = 5
-    encoder_micro_batch_size: int = 32
+    phase1_start_lr: float = 1e-4
+    phase1_end_lr: float = 5e-5
+    phase2_start_lr: float = 7.5e-5
+    phase2_end_lr: float = 3e-5
+    phase3_start_lr: float = 5e-5
+    phase3_end_lr: float = 5e-6
+    phase3_validity_start_lr: float = 1e-4
+    phase3_validity_end_lr: float = 1e-5
+    warmup_epochs: int = 3
+    encoder_micro_batch_size: int = 256
     type_loss_key: str = "BALANCED_SOFTMAX"
     validity_loss_key: str = "BCE"
-    validity_positive_alpha: float = 0.75
     type_loss_weight: float = 1.0
     validity_loss_weight: float = 1.0
     type_focal_gamma: float = 2.0
     class_balance_beta: float = 0.9999
     sampler_positive_fraction: float = 2.0 / 3.0
-    sampler_balanced_positive_fraction: float = 0.50
+    use_strong_rare_sampling: bool = True
+    sampler_balanced_positive_fraction: float = 0.25
     sampler_max_repeats: int = 4
-    sampler_tail_max_repeats: int = 4
-    hard_negative_start_phase_epoch: int = 6
+    sampler_tail_max_repeats: int = 12
+    rare_quota_gt_per_class: int = 16
+    rare_quota_oof_pos_per_class: int = 12
+    rare_quota_oof_all_per_class: int = 8
+    hard_negative_start_phase_epoch: int = 4
+    hard_positive_start_phase_epoch: int = 4
+    hard_pool_refresh_interval: int = 3
+    hard_reject_fraction: float = 0.50
+    hard_rare_fraction: float = 0.25
     checkpoint_selection_start_phase_epoch: int = 6
     use_stain_augmentation: bool = True
     validity_threshold_grid: tuple[float, ...] = (
@@ -338,14 +344,14 @@ def stage1_experiment_registry() -> dict[str, Stage1ModelConfig]:
 
 
 def stage2_experiment_registry() -> dict[str, Stage2ModelConfig]:
-    """Return the V13 Stage-2 experiment registry."""
+    """Return the V13.2 Stage-2 experiment registry."""
     from puma.stage2.catalog import stage2_experiment_registry as build_registry
 
     return build_registry()
 
 
 def stage2_experiment_groups() -> dict[str, tuple[str, ...]]:
-    """Compatibility facade for active Version-13 experiment groups."""
+    """Compatibility facade for active Version-13.2 experiment groups."""
     from puma.stage2.catalog import stage2_experiment_groups as build_groups
 
     return build_groups()
