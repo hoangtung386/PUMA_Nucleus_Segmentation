@@ -8,11 +8,18 @@ import numpy as np
 import torch
 from scipy.spatial import cKDTree
 
-from puma.config import REJECT_CLASS_ID, RuntimeConfig, stage1_experiment_registry, validate_folds
+from puma.config import (
+    REJECT_CLASS_ID,
+    RuntimeConfig,
+    stage1_experiment_registry,
+    stage1_model_config_from_dict,
+    validate_folds,
+)
 from puma.data.datasets import PumaNpyStore
 from puma.evaluation.metrics import match_centroids
 from puma.models.stage1 import build_stage1_model
 from puma.training.stage1 import STAGE1_EXPERIMENT, predict_roi
+from puma.training.stage1 import _stage1_run_hash
 from puma.utils import (
     atomic_save_numpy,
     atomic_write_json,
@@ -22,6 +29,9 @@ from puma.utils import (
     resolve_device,
     utc_now_iso,
 )
+
+OOF_IMPLEMENTATION_REVISION = 2
+
 
 CANDIDATE_DTYPE = np.dtype(
     [
@@ -67,6 +77,7 @@ def _candidate_rows_for_roi(
     prediction,
     ground_truth: np.ndarray,
     match_radius: float,
+    image_shape: tuple[int, ...],
 ) -> list[tuple[Any, ...]]:
     gt_xy = np.column_stack([ground_truth["x"], ground_truth["y"]]).astype(np.float32)
     match = match_centroids(prediction.coordinates, gt_xy, match_radius, prediction.scores)
@@ -81,7 +92,11 @@ def _candidate_rows_for_roi(
             prediction.coordinates, k=2
         )[0][:, 1].astype(np.float32)
     else:
-        nearest = np.full(len(prediction.coordinates), 99.0, dtype=np.float32)
+        # Match the Stage-2 geometry fallback used by GT-positive training and
+        # challenge inference when only one candidate exists in a 1024 ROI.
+        nearest = np.full(
+            len(prediction.coordinates), float(max(image_shape[:2])), dtype=np.float32
+        )
 
     rows: list[tuple[Any, ...]] = []
     for index in range(len(prediction.scores)):
@@ -124,15 +139,16 @@ def _oof_cache_signature(
         )
         if not path.exists():
             raise FileNotFoundError(f"Missing Stage-1 checkpoint for fold {fold}: {path}")
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        expected_hash = _stage1_run_hash(runtime, stage1_experiment_registry()[STAGE1_EXPERIMENT])
+        observed_hash = str(payload.get("extra", {}).get("config_hash", ""))
+        if observed_hash != expected_hash:
+            raise RuntimeError(f"Stage-1 checkpoint identity mismatch for fold {fold}: {path.name}")
         stat = path.stat()
-        checkpoints.append(
-            {
-                "fold": fold,
-                "name": path.name,
-                "size": int(stat.st_size),
-                "mtime_ns": int(stat.st_mtime_ns),
-            }
-        )
+        checkpoints.append({
+            "fold": fold, "name": path.name, "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns), "config_hash": observed_hash,
+        })
 
     metadata_path = runtime.paths.preprocessing_file("puma_preprocessing_metadata.json")
     preprocessing = None
@@ -144,6 +160,7 @@ def _oof_cache_signature(
             "preprocessing_schema_version": metadata.get("preprocessing_schema_version"),
         }
     return {
+        "oof_implementation_revision": OOF_IMPLEMENTATION_REVISION,
         "experiment": STAGE1_EXPERIMENT,
         "seed": int(seed),
         "run_folds": list(folds),
@@ -198,11 +215,15 @@ def generate_oof_candidates(
             f"stage1_best_{STAGE1_EXPERIMENT}_fold{fold}_seed{int(seed)}.pt"
         )
         payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        expected_hash = _stage1_run_hash(runtime, fallback_config)
+        if str(payload.get("extra", {}).get("config_hash", "")) != expected_hash:
+            raise RuntimeError(f"Stage-1 checkpoint hash mismatch for OOF fold {fold}: {checkpoint}")
         config = stage1_model_config_from_dict(payload["config"]) if payload.get("config") else fallback_config
         model = build_stage1_model(config).to(device)
         payload = load_checkpoint(checkpoint, model, device)
         threshold = float(payload.get("extra", {}).get("threshold", 0.25))
         radius = int(payload.get("extra", {}).get("radius", 3))
+        suppression_radius = float(payload.get("extra", {}).get("suppression_radius", 5.0))
 
         for roi_value in store.indices_for_fold(fold, train=False):
             roi = int(roi_value)
@@ -217,6 +238,7 @@ def generate_oof_candidates(
                 runtime.training.amp,
                 resolve_amp_dtype(runtime.training.prefer_bfloat16, device),
                 tile_batch_size=runtime.data.validation_tile_batch_size,
+                suppression_radius=suppression_radius,
             )
             roi_rows = _candidate_rows_for_roi(
                 roi,
@@ -224,6 +246,7 @@ def generate_oof_candidates(
                 prediction,
                 store.roi_centroids(roi),
                 runtime.data.official_match_radius_px,
+                np.asarray(store.images[roi]).shape,
             )
             rows.extend(roi_rows)
             roi_candidate_counts[str(roi)] = len(roi_rows)

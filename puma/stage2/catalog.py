@@ -1,112 +1,75 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from puma.config import Stage2ModelConfig
 
-VERSION13_EXPERIMENTS: tuple[str, ...] = (
-    "V13_01_META_NEW_SPLIT_FROZEN",
-    "V13_02_META_CONTEXT_NEW_SPLIT_FROZEN",
-    "V13_03_META_CONTEXT_CBFOCAL_FROZEN",
-    "V13_04_META_CONTEXT_CBCE_FROZEN",
-    "V13_05_META_CONTEXT_RAREBOOST_FROZEN",
-    "V13_06_META_CONTEXT_LORA_R8_B4",
+VERSION132_EXPERIMENTS: tuple[str, ...] = (
+    "V13_2_01_META_CONTROL_BS",
+    "V13_2_02_META_RARE_BS",
+    "V13_2_03_META_RARE_CE",
+    "V13_2_04_META_CONTEXT_RARE_BS",
 )
 
-VERSION13_EXPERIMENT_PURPOSE: dict[str, str] = {
-    VERSION13_EXPERIMENTS[0]: (
-        "META baseline: V64 + V128 with geometry on the fixed development split."
+VERSION132_EXPERIMENT_PURPOSE: dict[str, str] = {
+    VERSION132_EXPERIMENTS[0]: (
+        "Control: V64+V128 META geometry with Balanced Softmax and the moderate V13.1-style sampler."
     ),
-    VERSION13_EXPERIMENTS[1]: (
-        "Architecture consolidation: combine META geometry with V256 tissue context."
+    VERSION132_EXPERIMENTS[1]: (
+        "Primary V13.2 model: V64+V128 META geometry, Balanced Softmax, strong case-aware rare exposure, "
+        "hard rare positives and hard rejects."
     ),
-    VERSION13_EXPERIMENTS[2]: (
-        "Rare-class loss test: class-balanced focal type loss on META+CONTEXT."
+    VERSION132_EXPERIMENTS[2]: (
+        "Loss sanity check: identical strong rare-exposure policy to experiment 02 but plain CE type loss."
     ),
-    VERSION13_EXPERIMENTS[3]: (
-        "Rare-class loss test: effective-number class-balanced cross entropy on META+CONTEXT."
-    ),
-    VERSION13_EXPERIMENTS[4]: (
-        "Sampling test: stronger class-balanced positive sampling and larger repeat budget for tail classes."
-    ),
-    VERSION13_EXPERIMENTS[5]: (
-        "Representation adaptation: LoRA rank 8 in the last 4 UNI2-h blocks on META+CONTEXT."
+    VERSION132_EXPERIMENTS[3]: (
+        "Context ablation: identical to experiment 02 with strong rare exposure and Balanced Softmax, "
+        "but adds the V256 context view (V64+V128+V256)."
     ),
 }
 
 
-def _v13(
-    name: str,
-    *,
-    views: tuple[str, ...] = ("V2", "V3", "V4"),
-    use_geometry: bool = True,
-    type_loss_key: str = "BALANCED_SOFTMAX",
-    validity_loss_key: str = "BCE",
-    use_lora: bool = False,
-    lora_rank: int = 8,
-    lora_last_blocks: int = 4,
-    sampler_positive_fraction: float = 2.0 / 3.0,
-    sampler_balanced_positive_fraction: float = 0.50,
-    sampler_max_repeats: int = 4,
-    sampler_tail_max_repeats: int = 4,
-    type_loss_weight: float = 1.0,
-    validity_loss_weight: float = 1.0,
-) -> Stage2ModelConfig:
+def _base(name: str) -> Stage2ModelConfig:
     return Stage2ModelConfig(
         name=name,
-        views=views,
-        pooling_key="cls_center_ring",
-        schedule_key="GT_POS+OOF_POS+OOF_ALL",
+        views=("V2", "V3"),
+        use_geometry=True,
+        use_lora=False,
         loss_key="HIERARCHICAL",
-        use_geometry=use_geometry,
-        use_lora=use_lora,
-        lora_rank=lora_rank,
-        lora_last_blocks=lora_last_blocks,
-        selection_metric="macro_f1",
-        # Shared V13 encoder batch target.
-        encoder_micro_batch_size=256,
-        type_loss_key=type_loss_key,
-        validity_loss_key=validity_loss_key,
-        type_loss_weight=type_loss_weight,
-        validity_loss_weight=validity_loss_weight,
-        sampler_positive_fraction=sampler_positive_fraction,
-        sampler_balanced_positive_fraction=sampler_balanced_positive_fraction,
-        sampler_max_repeats=sampler_max_repeats,
-        sampler_tail_max_repeats=sampler_tail_max_repeats,
-        hard_negative_start_phase_epoch=6,
-        checkpoint_selection_start_phase_epoch=6,
+        schedule_key="GT_POS+OOF_POS+OOF_ALL",
+        interface_key="Fixed-MV",
+        type_loss_key="BALANCED_SOFTMAX",
+        validity_loss_key="BCE",
         use_stain_augmentation=True,
+        encoder_micro_batch_size=256,
     )
 
 
 def stage2_experiment_registry() -> dict[str, Stage2ModelConfig]:
-    """Return the six Stage-2 V13 experiments on one fixed split."""
-    configs = (
-        _v13(VERSION13_EXPERIMENTS[0], views=("V2", "V3"), use_geometry=True),
-        _v13(VERSION13_EXPERIMENTS[1]),
-        _v13(VERSION13_EXPERIMENTS[2], type_loss_key="CB_FOCAL"),
-        _v13(VERSION13_EXPERIMENTS[3], type_loss_key="CB_CE"),
-        _v13(
-            VERSION13_EXPERIMENTS[4],
-            sampler_positive_fraction=0.75,
-            sampler_balanced_positive_fraction=0.75,
-            sampler_max_repeats=6,
-            sampler_tail_max_repeats=10,
-        ),
-        _v13(
-            VERSION13_EXPERIMENTS[5],
-            use_lora=True,
-            lora_rank=8,
-            lora_last_blocks=4,
-        ),
+    control = replace(
+        _base(VERSION132_EXPERIMENTS[0]),
+        use_strong_rare_sampling=False,
+        sampler_balanced_positive_fraction=0.50,
+        sampler_max_repeats=4,
+        sampler_tail_max_repeats=4,
+        rare_quota_gt_per_class=0,
+        rare_quota_oof_pos_per_class=0,
+        rare_quota_oof_all_per_class=0,
+        hard_rare_fraction=0.0,
     )
-    if tuple(cfg.name for cfg in configs) != VERSION13_EXPERIMENTS:
-        raise RuntimeError("Version-13 Stage-2 experiment catalog is out of order.")
+    main = _base(VERSION132_EXPERIMENTS[1])
+    ce = replace(_base(VERSION132_EXPERIMENTS[2]), type_loss_key="CE")
+    context = replace(_base(VERSION132_EXPERIMENTS[3]), views=("V2", "V3", "V4"))
+    configs = (control, main, ce, context)
+    if tuple(cfg.name for cfg in configs) != VERSION132_EXPERIMENTS:
+        raise RuntimeError("V13.2 Stage-2 experiment catalog is out of order.")
     return {cfg.name: cfg for cfg in configs}
 
 
 def stage2_experiment_groups() -> dict[str, tuple[str, ...]]:
     registry = stage2_experiment_registry()
     return {
-        "frozen": tuple(name for name, cfg in registry.items() if not cfg.use_lora),
-        "lora": tuple(name for name, cfg in registry.items() if cfg.use_lora),
+        "screening": tuple(registry),
+        "recommended": (VERSION132_EXPERIMENTS[1],),
         "all": tuple(registry),
     }
