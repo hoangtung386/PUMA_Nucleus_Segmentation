@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from puma.config import PUMA_MICRONS_PER_PIXEL, STAGE2_GEOMETRY_DIM
+from puma.config import PUMA_MICRONS_PER_PIXEL, STAGE2_GEOMETRY_DIM, TAIL_CLASS_IDS
 from puma.data.targets import build_dense_targets
 
 
@@ -237,6 +237,11 @@ class Stage1TileDataset(Dataset):
         augment: bool = True,
         fixed_sigma: float = 2.5,
         offset_radius: float = 5.0,
+        background_fraction: float = 0.05,
+        density_fraction: float = 0.30,
+        small_nucleus_fraction: float = 0.20,
+        uniform_fraction: float = 0.30,
+        rare_nucleus_fraction: float = 0.15,
     ) -> None:
         self.store = store
         self.roi_indices = np.asarray(roi_indices, dtype=np.int64)
@@ -246,8 +251,20 @@ class Stage1TileDataset(Dataset):
         self.augment = bool(augment)
         self.fixed_sigma = float(fixed_sigma)
         self.offset_radius = float(offset_radius)
+        self.background_fraction = float(background_fraction)
+        self.density_fraction = float(density_fraction)
+        self.small_nucleus_fraction = float(small_nucleus_fraction)
+        self.uniform_fraction = float(uniform_fraction)
+        self.rare_nucleus_fraction = float(rare_nucleus_fraction)
+        fraction_sum = (
+            self.background_fraction + self.density_fraction + self.small_nucleus_fraction
+            + self.uniform_fraction + self.rare_nucleus_fraction
+        )
+        if abs(fraction_sum - 1.0) > 1e-6:
+            raise ValueError(f"Stage-1 sampling fractions must sum to 1.0, got {fraction_sum:.6f}.")
         self._epoch_shared = torch.zeros((), dtype=torch.int64).share_memory_()
         self._sampling_weights: dict[tuple[int, str], np.ndarray] = {}
+        self._rare_indices: dict[int, np.ndarray] = {}
 
         for roi_value in self.roi_indices:
             roi = int(roi_value)
@@ -261,6 +278,11 @@ class Stage1TileDataset(Dataset):
             self._sampling_weights[(roi, "uniform")] = np.full(
                 len(nuclei), 1.0 / len(nuclei), dtype=np.float64
             )
+            if "class_id" in nuclei.dtype.names:
+                rare = np.flatnonzero(np.isin(nuclei["class_id"].astype(int), np.asarray(TAIL_CLASS_IDS)))
+            else:
+                rare = np.empty(0, dtype=np.int64)
+            self._rare_indices[roi] = rare.astype(np.int64, copy=False)
 
     def set_epoch(self, epoch: int) -> None:
         self._epoch_shared.fill_(int(epoch))
@@ -276,18 +298,36 @@ class Stage1TileDataset(Dataset):
         rng: np.random.Generator,
     ) -> tuple[int, int]:
         height, width = image_shape[:2]
-        mode = rng.random()
-        if len(nuclei) and mode < 0.70:
-            if mode < 0.30:
-                weights = self._sampling_weights[(roi, "dense")]
-            elif mode < 0.50:
-                weights = self._sampling_weights[(roi, "small")]
+        mode = float(rng.random())
+        t_dense = self.density_fraction
+        t_small = t_dense + self.small_nucleus_fraction
+        t_uniform = t_small + self.uniform_fraction
+        t_rare = t_uniform + self.rare_nucleus_fraction
+
+        nucleus = None
+        if len(nuclei) and mode < t_dense:
+            weights = self._sampling_weights[(roi, "dense")]
+            nucleus = nuclei[int(rng.choice(len(nuclei), p=weights))]
+        elif len(nuclei) and mode < t_small:
+            weights = self._sampling_weights[(roi, "small")]
+            nucleus = nuclei[int(rng.choice(len(nuclei), p=weights))]
+        elif len(nuclei) and mode < t_uniform:
+            weights = self._sampling_weights[(roi, "uniform")]
+            nucleus = nuclei[int(rng.choice(len(nuclei), p=weights))]
+        elif len(nuclei) and mode < t_rare:
+            rare = self._rare_indices.get(roi, np.empty(0, dtype=np.int64))
+            if len(rare):
+                nucleus = nuclei[int(rare[int(rng.integers(len(rare)))])]
             else:
                 weights = self._sampling_weights[(roi, "uniform")]
-            nucleus = nuclei[int(rng.choice(len(nuclei), p=weights))]
+                nucleus = nuclei[int(rng.choice(len(nuclei), p=weights))]
+
+        if nucleus is not None:
             x0 = int(round(float(nucleus["x"]) - self.tile_size / 2 + rng.uniform(-0.2, 0.2) * self.tile_size))
             y0 = int(round(float(nucleus["y"]) - self.tile_size / 2 + rng.uniform(-0.2, 0.2) * self.tile_size))
         else:
+            # Explicit background/random-region branch. Some random tiles still contain nuclei,
+            # which is desirable because Stage 1 must learn full-image deployment statistics.
             x0 = int(rng.integers(0, max(width - self.tile_size + 1, 1)))
             y0 = int(rng.integers(0, max(height - self.tile_size + 1, 1)))
         return (
@@ -405,26 +445,40 @@ def build_stage2_geometry(
     nearest_distance: float,
     interface_key: str = "Fixed-MV",
 ) -> np.ndarray:
-    """Build only metadata that is valid for A1_IFCRN_PP at deployment."""
+    """Build the 7-D ROI geometry used consistently by training and inference.
+
+    PUMA labeled ROIs and challenge inputs are 1024x1024.  The function still uses
+    ``image_shape`` rather than a hard-coded constant so tests/local inference fail
+    transparently if a different shape is passed, while preserving identical feature
+    semantics whenever the same ROI geometry is used.
+    """
     if interface_key != "Fixed-MV":
         raise ValueError(
             f"Stage 2 supports only the leakage-safe Fixed-MV interface, got {interface_key!r}."
         )
+    if len(image_shape) < 2:
+        raise ValueError(f"image_shape must contain height and width, got {image_shape!r}.")
+    height, width = int(image_shape[0]), int(image_shape[1])
+    if height <= 0 or width <= 0:
+        raise ValueError(f"Invalid image_shape={image_shape!r}.")
+    if not (np.isfinite(x) and np.isfinite(y)):
+        raise ValueError(f"Non-finite candidate coordinate x={x}, y={y}.")
+
     nearest = (
         max(float(nearest_distance), 1e-3)
         if np.isfinite(nearest_distance)
-        else float(max(image_shape[:2]))
+        else float(max(height, width))
     )
     local_density = 1.0 / (math.pi * nearest * nearest)
-    border_distance = min(x, y, image_shape[1] - x, image_shape[0] - y)
+    border_distance = min(float(x), float(y), float(width) - float(x), float(height) - float(y))
     geometry = np.asarray([
         math.log1p(nearest),
         local_density,
         float(np.clip(confidence, 0.0, 1.0)),
-        float(np.clip(border_distance / max(min(image_shape[:2]), 1), 0.0, 1.0)),
+        float(np.clip(border_distance / max(min(height, width), 1), 0.0, 1.0)),
         PUMA_MICRONS_PER_PIXEL,
-        float(np.clip(x / image_shape[1], 0.0, 1.0)),
-        float(np.clip(y / image_shape[0], 0.0, 1.0)),
+        float(np.clip(float(x) / width, 0.0, 1.0)),
+        float(np.clip(float(y) / height, 0.0, 1.0)),
     ], dtype=np.float32)
     if geometry.shape != (STAGE2_GEOMETRY_DIM,) or not np.isfinite(geometry).all():
         raise ValueError(
@@ -439,9 +493,9 @@ class Stage2CandidateDataset(Dataset):
     """
     Reads a structured candidate NPY generated by puma.pipeline.oof.
 
-    Required fields are read from the OOF candidate contract. The revised A1 interface
-    uses only roi_index, x, y, confidence, nearest_distance, class_id, and is_reject;
-    no extent, orientation, uncertainty, or detector-embedding fields are required.
+    Required fields are read from the OOF candidate contract. Geometry is rebuilt from
+    roi_index, x, y, confidence, nearest_distance and the original 1024x1024 ROI shape;
+    no detector-embedding fields are required.
     """
     def __init__(
         self,
@@ -536,7 +590,20 @@ class Stage2CandidateDataset(Dataset):
 
         stain_parameters: dict[str, torch.Tensor] = {}
         if self.augment:
-            # Apply one stain perturbation consistently across all views.
+            # Morphology-preserving D4 augmentation is shared across all views so the
+            # candidate remains centered and multiscale views stay geometrically aligned.
+            transform_code = int(rng.integers(0, 8))
+            augmented: dict[str, torch.Tensor] = {}
+            for view, crop in crops.items():
+                value = crop
+                rotation = transform_code % 4
+                if rotation:
+                    value = torch.rot90(value, rotation, dims=(-2, -1))
+                if transform_code >= 4:
+                    value = torch.flip(value, dims=(-1,))
+                augmented[view] = value.contiguous()
+            crops = augmented
+            # Apply one mild stain perturbation consistently across all views.
             shared_stain = torch.from_numpy(sample_stain_parameters(rng))
             stain_parameters = {view: shared_stain for view in self.views}
         geometry = build_stage2_geometry(

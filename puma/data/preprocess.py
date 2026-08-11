@@ -9,7 +9,7 @@ import re
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 import tifffile
@@ -694,46 +694,202 @@ def _feature_vector_for_folds(roi_result: dict[str, Any]) -> np.ndarray:
     return np.concatenate([melanoma, presence * 2.0, log_counts], axis=0)
 
 
+def _fold_capacities(total_weight: int, number_of_folds: int) -> np.ndarray:
+    """Split ``total_weight`` ROIs into per-fold capacities that differ by at most one."""
+    base, remainder = divmod(int(total_weight), int(number_of_folds))
+    capacities = np.full(number_of_folds, base, dtype=np.int64)
+    capacities[:remainder] += 1
+    return capacities
+
+
 def _greedy_multilabel_assignments(
     results: list[dict[str, Any]],
     number_of_folds: int,
     seed: int,
+    *,
+    weights: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Greedy assignment for already-grouped records."""
+    """Greedy assignment for already-grouped records.
+
+    Fold size is a hard capacity, not a cost term: every fold is given a quota of
+    ``total_rois / number_of_folds`` (differing by at most one) and a group may only go
+    to a fold that still has room. Class balance is then optimised *within* that
+    constraint, by placing groups rarest-first into the eligible fold whose totals stay
+    closest to the pro-rata share of everything placed so far.
+
+    Both details matter, and an earlier version got both wrong:
+
+    * It compared each fold against the *final* per-fold target. While every fold still
+      sits far below that target, the fold closest to it is whichever is already
+      fullest, so each group lands in the biggest fold and feeds a rich-get-richer
+      loop. On PUMA (205 ROIs, 5 folds) that collapsed to sizes [1, 45, 87, 1, 71],
+      decided by a cost margin of 0.003 on the very first placement.
+    * It expressed size balance as a squared distance to the final size target, added
+      with weight 0.35. That penalises an *empty* fold for exactly the same reason, so
+      no weight can repair the collapse -- at weight 1000 the sizes were still
+      [1, 79, 44, 1, 80]. Switching to the pro-rata share alone still left one fold
+      starved at 11 ROIs, because a fold seeded with an outlier group stays above its
+      share long enough to be skipped for most of the loop.
+
+    A capacity is immune to both failure modes: no fold can be starved, whatever the
+    feature cost says.
+    """
     if len(results) < number_of_folds:
         raise ValueError(f"Need at least {number_of_folds} ROIs, found {len(results)}")
+    if weights is None:
+        weights = np.ones(len(results), dtype=np.int64)
+    weights = np.asarray(weights, dtype=np.int64)
+    if weights.shape != (len(results),) or np.any(weights < 1):
+        raise ValueError("weights must hold one positive ROI count per group.")
+
     rng = np.random.default_rng(seed)
     features = np.stack([_feature_vector_for_folds(r) for r in results])
-    target = features.sum(axis=0) / number_of_folds
-    rarity = 1.0 / np.maximum(features.sum(axis=0), 1.0)
+    totals = features.sum(axis=0)
+    # Per-dimension scale, so no single feature dimension dominates the cost.
+    scale = np.maximum(totals / number_of_folds, 1.0)
+    rarity = 1.0 / np.maximum(totals, 1.0)
     priorities = (features * rarity).sum(axis=1) + rng.uniform(0, 1e-6, len(results))
     order = np.argsort(priorities)[::-1]
+
+    capacities = _fold_capacities(int(weights.sum()), number_of_folds)
     fold_sums = np.zeros((number_of_folds, features.shape[1]), dtype=np.float64)
-    fold_sizes = np.zeros(number_of_folds, dtype=np.int32)
+    fold_weights = np.zeros(number_of_folds, dtype=np.int64)
     assignments = np.full(len(results), -1, dtype=np.int8)
-    # Seed one high-priority group into every fold so no validation fold can be empty.
+
+    # Seed the rarest group into every fold, so the rarest classes are spread across all
+    # folds instead of concentrating wherever the feature cost happens to point first.
     seed_folds = rng.permutation(number_of_folds)
+    seeded: set[int] = set()
     for position, idx in enumerate(order[:number_of_folds]):
         chosen = int(seed_folds[position])
         assignments[idx] = chosen
         fold_sums[chosen] += features[idx]
-        fold_sizes[chosen] += 1
+        fold_weights[chosen] += int(weights[idx])
+        seeded.add(int(idx))
 
-    for idx in order[number_of_folds:]:
-        costs = []
-        for fold in range(number_of_folds):
-            candidate_sum = fold_sums[fold] + features[idx]
-            feature_cost = np.mean(((candidate_sum - target) / np.maximum(target, 1.0)) ** 2)
-            size_target = len(results) / number_of_folds
-            size_cost = ((fold_sizes[fold] + 1 - size_target) / max(size_target, 1.0)) ** 2
-            costs.append(feature_cost + 0.35 * size_cost)
+    placed_sum = fold_sums.sum(axis=0)
+    for index in order:
+        idx = int(index)
+        if idx in seeded:
+            continue
+        placed_sum = placed_sum + features[idx]
+        # Share every fold should hold once this group has landed somewhere.
+        share = placed_sum / number_of_folds
+        room = capacities - fold_weights
+        eligible = room >= int(weights[idx])
+        if not eligible.any():
+            # A group larger than any remaining quota: put it where it overflows least.
+            eligible = room >= room.max()
+        candidate_sums = fold_sums + features[idx]
+        costs = np.mean(((candidate_sums - share) / scale) ** 2, axis=1)
+        costs = np.where(eligible, costs, np.inf)
         chosen = int(np.argmin(costs))
         assignments[idx] = chosen
         fold_sums[chosen] += features[idx]
-        fold_sizes[chosen] += 1
+        fold_weights[chosen] += int(weights[idx])
     if np.any(assignments < 0):
         raise AssertionError("Incomplete fold assignment")
+    return _refine_by_equal_weight_swaps(
+        assignments, features, weights, number_of_folds, scale
+    )
+
+
+def _refine_by_equal_weight_swaps(
+    assignments: np.ndarray,
+    features: np.ndarray,
+    weights: np.ndarray,
+    number_of_folds: int,
+    scale: np.ndarray,
+    *,
+    max_sweeps: int = 12,
+) -> np.ndarray:
+    """Swap equal-weight groups between folds while it reduces class imbalance.
+
+    The capacity-constrained greedy pass fixes fold *sizes*, but it still leaves an
+    end-game skew: groups are placed rarest-first, so the common tumour-heavy ROIs are
+    placed last and land in whichever fold still has quota rather than where they
+    balance best. On PUMA that left one fold with 15467 tumour and 933 lymphocyte nuclei
+    against roughly 10000/5000 elsewhere.
+
+    Swapping two groups that cover the same number of ROIs leaves every fold size
+    untouched, so this pass can only improve class balance, never break the capacity
+    guarantee. Sweeps run to a fixed point or ``max_sweeps``, whichever comes first.
+    """
+    target = features.sum(axis=0) / number_of_folds
+    fold_sums = np.stack([
+        features[assignments == fold].sum(axis=0) for fold in range(number_of_folds)
+    ])
+
+    def deviation(vector: np.ndarray) -> float:
+        return float((((vector - target) / scale) ** 2).sum())
+
+    fold_cost = np.array([deviation(fold_sums[fold]) for fold in range(number_of_folds)])
+    # Only equal-weight groups may swap, so pair candidates up by ROI count.
+    by_weight: dict[int, list[int]] = {}
+    for index, weight in enumerate(weights):
+        by_weight.setdefault(int(weight), []).append(int(index))
+
+    for _ in range(max_sweeps):
+        improved = False
+        for candidates in by_weight.values():
+            for position, left in enumerate(candidates):
+                for right in candidates[position + 1:]:
+                    fold_left, fold_right = int(assignments[left]), int(assignments[right])
+                    if fold_left == fold_right:
+                        continue
+                    new_left = fold_sums[fold_left] - features[left] + features[right]
+                    new_right = fold_sums[fold_right] - features[right] + features[left]
+                    delta = (
+                        deviation(new_left)
+                        + deviation(new_right)
+                        - fold_cost[fold_left]
+                        - fold_cost[fold_right]
+                    )
+                    if delta < -1e-12:
+                        assignments[left], assignments[right] = fold_right, fold_left
+                        fold_sums[fold_left], fold_sums[fold_right] = new_left, new_right
+                        fold_cost[fold_left] = deviation(new_left)
+                        fold_cost[fold_right] = deviation(new_right)
+                        improved = True
+        if not improved:
+            break
     return assignments
+
+
+def validate_fold_assignments(
+    assignments: np.ndarray,
+    number_of_folds: int,
+    *,
+    minimum_fold_fraction: float = 0.5,
+) -> dict[str, Any]:
+    """Fail loudly when a fold is too small to serve as a validation split.
+
+    Stage 1 uses every fold twice: once as the untouched outer fold that receives the
+    OOF prediction, and once as the inner fold that selects the checkpoint, heatmap
+    threshold, and local-max radius. A fold holding a handful of ROIs makes both of
+    those meaningless while still training and reporting without error, so a degenerate
+    split has to be a hard failure rather than a warning.
+    """
+    counts = np.bincount(np.asarray(assignments, dtype=np.int64), minlength=number_of_folds)
+    if counts.shape[0] != number_of_folds:
+        raise ValueError(
+            f"Fold labels outside [0,{number_of_folds - 1}] were assigned: {counts.shape[0]} labels."
+        )
+    expected = len(assignments) / number_of_folds
+    floor = max(2.0, minimum_fold_fraction * expected)
+    if int(counts.min()) < floor:
+        raise ValueError(
+            f"Degenerate fold assignment: sizes {counts.tolist()} for {len(assignments)} ROIs "
+            f"across {number_of_folds} folds (expected about {expected:.0f} each, minimum "
+            f"allowed {floor:.0f}). Nested validation and OOF coverage would both be invalid."
+        )
+    return {
+        "fold_sizes": counts.tolist(),
+        "expected_fold_size": round(float(expected), 2),
+        "minimum_fold_size": int(counts.min()),
+        "maximum_fold_size": int(counts.max()),
+        "size_imbalance_ratio": round(float(counts.max() / max(int(counts.min()), 1)), 3),
+    }
 
 
 def multilabel_greedy_folds(
@@ -762,13 +918,53 @@ def multilabel_greedy_folds(
             "class_counts": counts,
             "melanoma_type": melanoma_type,
         })
-    group_folds = _greedy_multilabel_assignments(group_records, number_of_folds, seed)
+    # Capacity is counted in ROIs, not case groups, so a multi-ROI patient consumes its
+    # full share of the fold quota and the resulting ROI counts stay balanced.
+    group_weights = np.array([len(grouped[group_id]) for group_id in group_ids], dtype=np.int64)
+    group_folds = _greedy_multilabel_assignments(
+        group_records, number_of_folds, seed, weights=group_weights
+    )
     assignments = np.full(len(results), -1, dtype=np.int8)
     for group_id, fold in zip(group_ids, group_folds, strict=True):
         assignments[np.asarray(grouped[group_id], dtype=np.int64)] = int(fold)
     if np.any(assignments < 0):
         raise AssertionError("Incomplete case-group fold assignment")
+    validate_fold_assignments(assignments, number_of_folds)
     return assignments
+
+
+def fold_assignment_report(
+    results: list[dict[str, Any]],
+    assignments: np.ndarray,
+    number_of_folds: int,
+    class_names: Sequence[str],
+) -> dict[str, Any]:
+    """Summarise ROI counts, melanoma type, and per-class spread across the folds."""
+    assignments = np.asarray(assignments, dtype=np.int64)
+    counts = np.stack([np.asarray(r["class_counts"], dtype=np.int64) for r in results])
+    types = np.array([str(r["melanoma_type"]) for r in results])
+    per_fold: dict[str, Any] = {}
+    for fold in range(number_of_folds):
+        mask = assignments == fold
+        class_totals = counts[mask].sum(axis=0)
+        per_fold[str(fold)] = {
+            "rois": int(mask.sum()),
+            "nuclei": int(class_totals.sum()),
+            "primary": int(np.sum(types[mask] == "primary")),
+            "metastatic": int(np.sum(types[mask] == "metastatic")),
+            "class_counts": {
+                str(name): int(value) for name, value in zip(class_names, class_totals, strict=True)
+            },
+            "classes_absent": [
+                str(name)
+                for name, value in zip(class_names, class_totals, strict=True)
+                if int(value) == 0
+            ],
+        }
+    return {
+        **validate_fold_assignments(assignments, number_of_folds),
+        "per_fold": per_fold,
+    }
 
 
 def _submit_bounded(
@@ -1037,6 +1233,9 @@ def preprocess_dataset(config: RuntimeConfig, *, force: bool = False) -> dict[st
             "The 15-pixel PUMA tolerance is used by evaluation and candidate matching, not as the Gaussian target sigma."
         ),
         "fold_counts": {str(f): int(np.sum(fold_assignments == f)) for f in range(data_config.number_of_folds)},
+        "fold_report": fold_assignment_report(
+            results, fold_assignments, data_config.number_of_folds, PUMA_CLASS_NAMES
+        ),
         "case_group_count": int(len(set(str(row["case_id"]) for row in roi_manifest))),
         "case_metadata_csv": str(paths.case_metadata_csv) if paths.case_metadata_csv.exists() else None,
         "artifact_files": {key: str(path) for key, path in output_paths.items()},

@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import OrderedDict
 import hashlib
 import math
-import os
 import random
 from typing import Any
 
@@ -56,13 +55,6 @@ def _phase_epoch_number(schedule: str, epoch: int, epochs: int) -> int:
     while start > 1 and _phase_for_epoch(schedule, start - 1, epochs) == phase:
         start -= 1
     return int(epoch) - start + 1
-
-def _resume_interval_epochs() -> int:
-    """Checkpoint interrupted Stage-2 runs without writing a large state every epoch."""
-    try:
-        return max(1, int(os.environ.get("PUMA_STAGE2_RESUME_INTERVAL", "5")))
-    except ValueError:
-        return 5
 
 def _move_optimizer_state_to_device(
     optimizer: torch.optim.Optimizer, device: torch.device
